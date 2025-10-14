@@ -1,0 +1,531 @@
+PHASE 6: BACKTESTING ENGINE IMPLEMENTATION STEPS
+
+===================================================================
+Step 6.1.1: Create backtesting engine structure
+===================================================================
+
+Create backtest/engine.py with a BacktestEngine class. Include attributes in __init__:
+- initial_capital: float (starting capital)
+- start_date: str or datetime
+- end_date: str or datetime
+- tiingo_client: TiingoClient (for data fetching)
+- scanner: AssetScanner (for candidate selection)
+- signal_generator: SignalGenerator (for entries/exits)
+- risk_manager: RiskManager (for position sizing and limits)
+- slippage: dict {'stock': 0.001, 'crypto': 0.003}
+- commission: dict {'stock': 0.0, 'crypto': 0.001}
+
+Create skeleton methods:
+- run(strategy_config) - Main backtest execution
+- run_single_day(date) - Process one day of trading
+- scan_for_candidates(date) - Find tradeable assets
+- check_entries(candidates, date) - Look for entry signals
+- check_exits(date) - Check all open positions for exits
+- execute_trade(trade_dict) - Execute entry or exit
+- update_portfolio_state(date) - Update account value, positions
+- record_trade(trade) - Save trade for analysis
+- get_results() - Return backtest results
+
+Use type hints and comprehensive docstrings.
+
+===================================================================
+Step 6.1.2: Implement main backtest loop
+===================================================================
+
+Implement the run method in BacktestEngine:
+
+Main workflow:
+1. Initialize state:
+   - current_capital = initial_capital
+   - positions = {}
+   - trades = []
+   - daily_values = []
+
+2. Get list of trading days between start_date and end_date
+
+3. For each trading day:
+   - Scan for candidates (use cached scans to avoid re-scanning)
+   - Check entries for top candidates
+   - Check exits for open positions
+   - Execute trades (entries and exits)
+   - Update portfolio value
+   - Record daily state
+   - Check risk limits
+
+4. After all days processed:
+   - Close any remaining positions at final date
+   - Calculate performance metrics
+   - Return results
+
+The method should:
+- Show progress bar (e.g., "Processing 250/500 days...")
+- Handle market holidays (no trading those days)
+- Log significant events (entries, exits, limit hits)
+- Save checkpoints periodically (in case of crash)
+
+Return dict with comprehensive results.
+
+===================================================================
+Step 6.1.3: Implement single day processing
+===================================================================
+
+Implement run_single_day method:
+
+Process one trading day:
+1. Update prices for all open positions (mark-to-market)
+2. Check exits first (stops, targets, etc.)
+3. Execute any exit signals
+4. Update account after exits
+5. Check for new entry signals
+6. Validate new entries with RiskManager
+7. Execute approved entries
+8. Update portfolio state
+9. Calculate and record daily portfolio value
+
+The method should:
+- Take a date parameter
+- Access cached market data for that date
+- Return dict with day's trading activity
+- Handle partial data (some tickers may not have data for that day)
+
+This is called by run() for each day in the backtest period.
+
+===================================================================
+Step 6.1.4: Implement candidate scanning with caching
+===================================================================
+
+Implement scan_for_candidates method:
+
+Efficient candidate scanning:
+- On first call: run full AssetScanner.run_daily_scan()
+- Cache results (candidates don't change much day-to-day)
+- Rescan every N days (configurable, default 5 days)
+- Between rescans: use cached candidate list
+
+The method should:
+- Take date parameter
+- Check cache freshness
+- Run scan if needed or use cache
+- Return list of candidate tickers with momentum scores
+
+This dramatically speeds up backtesting by avoiding redundant scanning.
+
+===================================================================
+Step 6.1.5: Implement entry signal checking
+===================================================================
+
+Implement check_entries method:
+
+For each candidate ticker:
+1. Fetch OHLCV data up to current date
+2. Ensure all indicators are calculated
+3. Run SignalGenerator.check_entry_signals()
+4. If signal found:
+   - Validate with RiskManager
+   - If approved, create entry trade dict
+5. Return list of approved entry trades
+
+The method should:
+- Limit to top N candidates (don't check all 500 universe stocks)
+- Skip tickers already in positions
+- Handle data fetch failures gracefully
+- Sort entry signals by strength
+- Take only as many as RiskManager allows
+
+Return list of trade dicts ready for execution.
+
+===================================================================
+Step 6.1.6: Implement exit signal checking
+===================================================================
+
+Implement check_exits method:
+
+For each open position:
+1. Get current day's price data for that ticker
+2. Update Position with current prices (for mark-to-market)
+3. Run SignalGenerator.check_exit_signals()
+4. If exit signal found:
+   - Create exit trade dict
+   - Include exit type (stop, target, trailing, etc.)
+5. Return list of exit trades
+
+The method should:
+- Check ALL open positions every day
+- Prioritize stop losses (check first)
+- Handle missing data (if ticker data unavailable, skip that day)
+- Update trailing stops even if no exit
+- Log exit reasons
+
+Return list of exit trade dicts ready for execution.
+
+===================================================================
+Step 6.1.7: Implement realistic trade execution
+===================================================================
+
+Implement execute_trade method:
+
+Simulate realistic trade execution:
+
+For entries:
+- Entry price = next day's open + slippage
+- Calculate shares: position_size / entry_price
+- Deduct capital: capital -= (shares × entry_price) + commission
+- Create Position object
+- Add to risk_manager.positions
+- Record trade
+
+For exits:
+- Exit price = signal's exit_price (already accounts for stop/target)
+- Add slippage: exit_price × (1 - slippage) for realistic fill
+- Calculate proceeds: (shares × exit_price) - commission
+- Add to capital
+- Calculate realized P&L
+- Remove from risk_manager.positions
+- Record trade
+
+The method should:
+- Apply asset-specific slippage (stocks vs crypto)
+- Apply commissions/fees
+- Update all accounting correctly
+- Validate sufficient capital for entries
+- Handle partial fills if needed (advanced)
+
+Return executed trade details.
+
+===================================================================
+Step 6.1.8: Implement portfolio state tracking
+===================================================================
+
+Implement update_portfolio_state method:
+
+Track portfolio evolution:
+- Calculate total account value:
+  - Cash + sum(position_values)
+  - position_value = shares × current_price
+- Track daily equity curve
+- Calculate unrealized P&L for open positions
+- Record:
+  - Date
+  - Total value
+  - Cash balance
+  - Position count
+  - Unrealized P&L
+  - Realized P&L (day)
+  - Drawdown from peak
+
+Store in daily_states list for later analysis.
+
+This creates the equity curve and tracks portfolio metrics over time.
+
+===================================================================
+Step 6.1.9: Implement trade recording
+===================================================================
+
+Implement record_trade method:
+
+Record all trade details for analysis:
+
+Trade dict should include:
+- trade_id (sequential)
+- ticker
+- asset_type
+- trade_type ('entry' or 'exit')
+- date
+- price
+- shares
+- value
+- commission
+- slippage_cost
+- For exits:
+  - entry_date
+  - entry_price
+  - exit_type (stop_loss, profit_target, etc.)
+  - holding_period (days)
+  - pnl_dollars
+  - pnl_percent
+  - mae (maximum adverse excursion)
+  - mfe (maximum favorable excursion)
+
+Store in self.trades list.
+
+Also create a separate list for completed_round_trips (entry + exit pairs).
+
+===================================================================
+Step 6.1.10: Implement results compilation
+===================================================================
+
+Implement get_results method:
+
+Compile comprehensive backtest results:
+
+Return dict with:
+- summary_stats: dict with key metrics
+- equity_curve: DataFrame with daily values
+- trades: DataFrame with all trades
+- positions_history: DataFrame with position snapshots
+- monthly_returns: Series with monthly return breakdown
+- yearly_returns: Series with yearly returns
+- drawdown_periods: list of major drawdown events
+
+This provides all data needed for performance analysis (Phase 6.2).
+
+===================================================================
+Step 6.2.1: Create performance metrics module
+===================================================================
+
+Create backtest/metrics.py with PerformanceMetrics class.
+
+Implement methods to calculate:
+- total_return() - Overall % return
+- cagr() - Compound Annual Growth Rate
+- sharpe_ratio(risk_free_rate=0.02) - Risk-adjusted return
+- sortino_ratio(risk_free_rate=0.02) - Downside risk-adjusted
+- max_drawdown() - Largest peak-to-trough decline
+- max_drawdown_duration() - Longest drawdown recovery
+- win_rate() - % of winning trades
+- profit_factor() - Gross profit / Gross loss
+- average_win() - Average $ and % win
+- average_loss() - Average $ and % loss
+- expectancy() - Expected $ per trade
+- total_trades() - Number of trades
+- avg_holding_period() - Average days in position
+- exposure_time() - % of time capital was deployed
+
+Each method should take backtest results as input and return the metric.
+
+===================================================================
+Step 6.2.2: Implement return calculations
+===================================================================
+
+Implement return metrics in PerformanceMetrics:
+
+total_return:
+- (final_value - initial_value) / initial_value
+
+cagr:
+- ((final_value / initial_value) ^ (1 / years)) - 1
+- Accounts for compounding over time
+
+Both should handle the case where final_value < initial_value (negative returns).
+
+===================================================================
+Step 6.2.3: Implement risk-adjusted returns
+===================================================================
+
+Implement Sharpe and Sortino ratios:
+
+sharpe_ratio:
+- (annualized_return - risk_free_rate) / annualized_volatility
+- annualized_return = mean(daily_returns) × 252
+- annualized_volatility = std(daily_returns) × sqrt(252)
+- Measures return per unit of total risk
+
+sortino_ratio:
+- (annualized_return - risk_free_rate) / downside_deviation
+- downside_deviation = std(negative_returns_only) × sqrt(252)
+- Measures return per unit of downside risk
+- Better for asymmetric strategies
+
+Both should use daily returns from equity curve.
+
+Target: Sharpe > 1.0, Sortino > 1.5
+
+===================================================================
+Step 6.2.4: Implement drawdown analysis
+===================================================================
+
+Implement drawdown calculations:
+
+max_drawdown:
+1. Calculate running maximum (peak) of equity curve
+2. Calculate drawdown at each point: (current - peak) / peak
+3. Return minimum (most negative) drawdown
+4. Express as positive % (e.g., 15% drawdown)
+
+max_drawdown_duration:
+1. Identify all drawdown periods (peak to new peak)
+2. Calculate duration of each in days
+3. Return longest duration
+4. Also return current drawdown if not at new peak
+
+create_drawdown_series:
+- Return full Series of drawdown % over time
+- Used for visualization
+
+This identifies worst losses and recovery times.
+
+===================================================================
+Step 6.2.5: Implement trade statistics
+===================================================================
+
+Implement trade-level metrics:
+
+win_rate:
+- winning_trades / total_trades
+- Target: > 50% for momentum strategy
+
+profit_factor:
+- sum(winning_trade_pnls) / abs(sum(losing_trade_pnls))
+- Target: > 1.5 (wins 1.5x larger than losses)
+
+average_win and average_loss:
+- Calculate both $ amounts and % returns
+- Return dict with both
+
+expectancy:
+- (win_rate × avg_win) - ((1 - win_rate) × avg_loss)
+- Expected value per trade
+- Must be positive for profitable system
+
+These metrics help evaluate strategy quality.
+
+===================================================================
+Step 6.2.6: Implement holding period analysis
+===================================================================
+
+Implement holding period metrics:
+
+avg_holding_period:
+- Mean of all trade durations in days
+- Separate for winners vs losers
+- Momentum trades typically 10-30 days
+
+median_holding_period:
+- Median duration (less affected by outliers)
+
+holding_period_distribution:
+- Histogram data for visualization
+- Bins: <5 days, 5-10, 10-20, 20-30, >30
+
+This shows if strategy timing is working correctly.
+
+===================================================================
+Step 6.2.7: Implement exposure and efficiency metrics
+===================================================================
+
+Implement capital efficiency metrics:
+
+exposure_time:
+- % of days capital was invested (had open positions)
+- (days_with_positions / total_days) × 100
+- Higher = capital working more
+
+capital_efficiency:
+- Return / avg_capital_deployed
+- Measures how well deployed capital performed
+
+recovery_factor:
+- Total return / max_drawdown
+- Higher = better return for risk taken
+
+These show how efficiently capital was used.
+
+===================================================================
+Step 6.2.8: Implement monthly/yearly breakdowns
+===================================================================
+
+Implement period-based analysis:
+
+calculate_monthly_returns:
+- Group trades by month
+- Calculate return for each month
+- Return Series indexed by month
+- Identify best and worst months
+
+calculate_yearly_returns:
+- Group by year
+- Calculate annual returns
+- Return Series indexed by year
+
+calculate_rolling_returns:
+- Calculate returns over rolling N-day windows
+- Useful for stability analysis
+
+This shows consistency and identifies patterns.
+
+===================================================================
+Step 6.2.9: Create performance report generator
+===================================================================
+
+Implement generate_report method in PerformanceMetrics:
+
+Create comprehensive text report with sections:
+
+1. Summary Statistics:
+   - Total Return, CAGR
+   - Sharpe, Sortino ratios
+   - Max Drawdown
+   - Total trades, Win rate
+   - Profit factor
+   
+2. Trade Analysis:
+   - Average win/loss
+   - Largest win/loss
+   - Expectancy
+   - Holding periods
+   
+3. Risk Metrics:
+   - Max drawdown duration
+   - Worst month
+   - Exposure time
+   
+4. Comparison to Benchmark:
+   - Strategy vs Buy & Hold S&P 500
+   - Risk-adjusted comparison
+
+Format for readability (aligned columns, clear headers).
+
+Save to text file and return string.
+
+===================================================================
+Step 6.2.10: Create visualization suite
+===================================================================
+
+Create backtest/visualizations.py with plotting functions:
+
+plot_equity_curve:
+- Line chart of portfolio value over time
+- Mark entry/exit points
+- Highlight drawdown periods in red
+- Add benchmark comparison (buy & hold)
+
+plot_drawdown_chart:
+- Area chart showing drawdown % over time
+- Annotate max drawdown period
+
+plot_monthly_returns_heatmap:
+- Heatmap of returns by month and year
+- Green for positive, red for negative
+
+plot_trade_analysis:
+- Histogram of trade returns
+- Scatter plot: holding period vs return
+- Distribution of win/loss sizes
+
+plot_rolling_metrics:
+- Rolling Sharpe ratio
+- Rolling win rate
+- Rolling profit factor
+
+Use matplotlib and save all plots to output/ directory.
+
+===================================================================
+PHASE 6 SUCCESS CRITERIA
+===================================================================
+
+✅ Backtest engine processes historical data correctly
+✅ Walk-forward methodology implemented (no look-ahead bias)
+✅ Realistic slippage and commissions applied
+✅ Trade execution simulation accurate
+✅ Risk management limits enforced during backtest
+✅ Complete trade history recorded
+✅ Equity curve generated correctly
+✅ All performance metrics calculated
+✅ Sharpe ratio > 1.0 (target)
+✅ Max drawdown < 20% (target)
+✅ Win rate > 45% (acceptable for momentum)
+✅ Profit factor > 1.5 (target)
+✅ Visualizations clear and informative
+✅ Results reproducible (same config = same results)
+
+Once Phase 6 is complete, you can backtest the strategy on historical data and evaluate its performance objectively.

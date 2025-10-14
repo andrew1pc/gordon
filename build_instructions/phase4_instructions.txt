@@ -1,0 +1,346 @@
+PHASE 4: SIGNAL GENERATION IMPLEMENTATION STEPS
+
+===================================================================
+Step 4.1.1: Create signal generator module structure
+===================================================================
+
+Create strategy/signals.py with a SignalGenerator class. Add skeleton methods for:
+- check_entry_signals(df, current_idx) - Check if entry conditions met
+- check_exit_signals(position, df, current_idx) - Check if exit conditions met
+- validate_entry_conditions(df, idx) - Verify all entry criteria
+- calculate_entry_price(df, idx) - Determine actual entry price
+- calculate_initial_stop(entry_price, df, idx, asset_type) - Set initial stop loss
+
+Include a Position class to track open positions with attributes:
+- ticker
+- asset_type ('stock' or 'crypto')
+- entry_date
+- entry_price
+- position_size
+- initial_stop
+- trailing_stop
+- highest_price (for trailing stop)
+- target_price
+
+Use type hints and comprehensive docstrings.
+
+===================================================================
+Step 4.1.2: Implement entry signal detection
+===================================================================
+
+Implement check_entry_signals method in strategy/signals.py. It should detect entry when ALL conditions are met:
+
+1. Price breaks above 20-day high:
+   - Current close > max(high of previous 20 days)
+   
+2. Volume surge confirmation:
+   - volume_surge column is True (from Phase 2)
+   - Current volume >= 1.5x the 20-day volume average
+   
+3. MACD confirmation:
+   - macd_histogram > 0 (MACD line above signal line)
+   - Bonus: macd_histogram increasing (current > previous)
+   
+4. Trend alignment:
+   - Price above 50-day MA
+   - 50-day MA trending up (current > value 5 days ago)
+   
+5. Momentum score strong:
+   - momentum_score >= 70
+
+The method should:
+- Take a DataFrame and current index position
+- Check all conditions at that index
+- Return a dict if signal found: {
+    'signal': True,
+    'ticker': ticker,
+    'date': date,
+    'entry_price': calculated_entry_price,
+    'signal_strength': score 0-100,
+    'conditions_met': list of conditions
+  }
+- Return None if no signal
+- Log when signals are generated
+
+===================================================================
+Step 4.1.3: Implement multiple timeframe confirmation (crypto)
+===================================================================
+
+Add a check_multiple_timeframes method to SignalGenerator:
+
+For crypto assets that trade 24/7, confirm daily signals with 4-hour chart:
+- Take daily DataFrame and 4-hour DataFrame
+- Daily signal must align with 4-hour momentum:
+  - 4-hour RSI > 50
+  - 4-hour MACD histogram > 0
+  - 4-hour price above 20-period MA
+- Return True if 4-hour confirms, False otherwise
+
+This reduces false breakouts that occur on daily charts but lack intraday follow-through.
+
+Note: For stocks, this is optional since they only trade during market hours.
+
+===================================================================
+Step 4.1.4: Implement entry price calculation
+===================================================================
+
+Implement calculate_entry_price method in strategy/signals.py:
+
+In backtesting:
+- Use next bar's open price (can't enter at current bar's close)
+- Add slippage:
+  - Stocks: 0.1% above open
+  - Crypto: 0.3% above open (wider spreads)
+- This simulates realistic fill prices
+
+In live trading:
+- Use limit order at current ask + small buffer
+- Or market order with expected slippage
+
+The method should:
+- Take DataFrame, signal index, and asset type
+- Return realistic entry price accounting for slippage
+- Log the calculated entry price
+
+===================================================================
+Step 4.1.5: Implement initial stop loss calculation
+===================================================================
+
+Implement calculate_initial_stop method in strategy/signals.py:
+
+Calculate stop loss based on:
+1. ATR-based stop (preferred):
+   - Stop = entry_price - (2.5 × ATR)
+   - More dynamic, adjusts to volatility
+   
+2. Percentage-based stop (alternative):
+   - Stocks: entry_price × 0.93 (7% stop)
+   - Crypto: entry_price × 0.88 (12% stop)
+   
+3. Use whichever is wider to avoid being stopped too easily
+
+The method should:
+- Take entry price, DataFrame at entry index, asset type
+- Calculate both ATR and percentage stops
+- Use the wider (more forgiving) stop
+- Ensure stop is below recent support (20-day low minimum)
+- Return stop price
+- Log stop loss placement and reasoning
+
+===================================================================
+Step 4.2.1: Implement profit target calculation
+===================================================================
+
+Add a calculate_profit_target method to SignalGenerator:
+
+Calculate target based on asset type and volatility:
+- Stocks: 15-25% above entry (scale with ATR)
+  - If ATR is high: 25% target
+  - If ATR is low: 15% target
+- Crypto: 25-40% above entry (scale with ATR)
+  - If ATR is high: 40% target
+  - If ATR is low: 25% target
+
+The method should:
+- Take entry price, DataFrame at entry, asset type
+- Calculate ATR-adjusted target
+- Return target price
+- Store target in Position object
+
+This gives each trade a clear profit objective.
+
+===================================================================
+Step 4.2.2: Implement stop loss exit signal
+===================================================================
+
+Implement check_stop_loss method in strategy/signals.py:
+
+Check if current price triggers stop loss:
+- Compare current low (worst price of the day) to stop price
+- If low <= stop_price: exit triggered
+- Return exit signal with:
+  - exit_type: 'stop_loss'
+  - exit_price: stop_price (assume filled at stop)
+  - exit_date: current date
+  - pnl: (exit_price - entry_price) / entry_price
+
+Log all stop loss exits for analysis.
+
+===================================================================
+Step 4.2.3: Implement profit target exit signal
+===================================================================
+
+Implement check_profit_target method in strategy/signals.py:
+
+Check if profit target reached:
+- Compare current high (best price of the day) to target price
+- If high >= target_price: exit triggered
+- Return exit signal with:
+  - exit_type: 'profit_target'
+  - exit_price: target_price
+  - exit_date: current date
+  - pnl: (exit_price - entry_price) / entry_price
+
+Consider: Should you exit entire position or scale out partially? (Start with full exit)
+
+===================================================================
+Step 4.2.4: Implement trailing stop
+===================================================================
+
+Implement update_trailing_stop and check_trailing_stop methods:
+
+update_trailing_stop should:
+- Track highest price since entry in Position object
+- Once price is 10% above entry, activate trailing stop:
+  - Set trailing_stop = highest_price × 0.92 (8% below high)
+- Update trailing stop as new highs are made
+- Trailing stop only moves up, never down
+- Replace initial stop with trailing stop once activated
+
+check_trailing_stop should:
+- If trailing stop is active, check if price hits it
+- Return exit signal if triggered
+- Exit type: 'trailing_stop'
+
+This locks in profits as the trade moves in your favor.
+
+===================================================================
+Step 4.2.5: Implement momentum failure exit
+===================================================================
+
+Implement check_momentum_failure method:
+
+Exit if momentum deteriorates:
+- Price closes below 20-day MA on high volume (volume > 1.5× average)
+- AND one of:
+  - MACD histogram turns negative
+  - RSI drops below 40
+  - momentum_score drops below 50
+
+This exits before small losses become large losses.
+
+Return exit signal with exit_type: 'momentum_failure'
+
+===================================================================
+Step 4.2.6: Implement time-based exit
+===================================================================
+
+Implement check_time_exit method:
+
+Exit if position held for max duration without hitting targets:
+- Default: 30 trading days (adjust in config)
+- This prevents capital being tied up in dead positions
+- Exit at current market price
+
+Return exit signal with exit_type: 'time_exit'
+
+Consider this a "management" exit for positions that aren't working.
+
+===================================================================
+Step 4.2.7: Implement comprehensive exit checker
+===================================================================
+
+Implement check_exit_signals method that orchestrates all exit checks:
+
+Priority order (check in this sequence):
+1. Stop loss (highest priority - protect capital)
+2. Profit target (take wins)
+3. Trailing stop (if active)
+4. Momentum failure (exit deteriorating positions)
+5. Time exit (lowest priority - cleanup)
+
+The method should:
+- Take a Position object and current DataFrame row
+- Check each exit condition in order
+- Return first exit signal that triggers
+- Update Position object with exit info
+- Log exit with reason
+
+This ensures positions are managed according to the rules.
+
+===================================================================
+Step 4.2.8: Create signal tracking and logging
+===================================================================
+
+Add a SignalTracker class in strategy/signals.py:
+
+Tracks all signals generated for analysis:
+- all_entry_signals: list of entry signal dicts
+- all_exit_signals: list of exit signal dicts
+- active_positions: dict of currently open positions
+
+Methods:
+- add_entry_signal(signal) - Record entry signal
+- add_exit_signal(signal) - Record exit signal
+- get_signal_statistics() - Return summary stats
+- export_to_csv(filepath) - Save signals for analysis
+
+This creates an audit trail of all trading decisions.
+
+===================================================================
+Step 4.2.9: Create unit tests for signal generation
+===================================================================
+
+Create tests/test_signals.py with pytest tests:
+
+Test fixtures:
+- Create DataFrames with known breakout patterns
+- Create DataFrames with failed breakouts
+- Create DataFrames with profit target hits
+- Create DataFrames with stop loss hits
+
+Tests:
+- test_entry_signal_valid_breakout - should trigger on clean breakout
+- test_entry_signal_no_volume - should NOT trigger without volume
+- test_entry_signal_weak_momentum - should NOT trigger if momentum_score < 70
+- test_stop_loss_trigger - verify stop loss detects hits
+- test_profit_target_trigger - verify target exits work
+- test_trailing_stop_activation - verify activates at 10% gain
+- test_trailing_stop_movement - verify only moves up, not down
+- test_momentum_failure_exit - verify deterioration detected
+- test_time_exit - verify max holding period enforced
+- test_exit_priority - verify stop loss checked before profit target
+- test_entry_price_slippage - verify slippage applied correctly
+- test_multiple_timeframe_confirmation - verify 4H chart alignment
+
+Use parametrized tests for different scenarios.
+
+===================================================================
+Step 4.2.10: Create signal validation script
+===================================================================
+
+Create validate_signals.py that:
+1. Fetches historical data for known momentum stocks (NVDA, TSLA in strong periods)
+2. Runs SignalGenerator on historical data
+3. Identifies all entry and exit signals
+4. Visualizes signals on price charts:
+   - Mark entry points (green arrow up)
+   - Mark exits with color coding (red=stop, blue=target, yellow=trailing, gray=time)
+   - Show stop loss and target levels
+   - Annotate momentum_score at entries
+5. Calculate statistics:
+   - How many entry signals generated
+   - Exit breakdown by type (% stops, % targets, etc.)
+   - Average holding period
+   - Win rate (preliminary, before full backtest)
+6. Manually verify signals look reasonable
+
+Include visual charts saved to output/ directory.
+
+===================================================================
+PHASE 4 SUCCESS CRITERIA
+===================================================================
+
+✅ Entry signals correctly identify breakouts with volume and momentum
+✅ False breakouts filtered out (no volume, weak momentum)
+✅ Initial stops placed at appropriate distance
+✅ Profit targets calculated based on volatility
+✅ Trailing stops activate and move correctly
+✅ Momentum failure exits catch deteriorating positions
+✅ All exits prioritized correctly (stops first)
+✅ Slippage applied realistically
+✅ Multiple timeframe confirmation works for crypto
+✅ All tests pass with >80% coverage
+✅ Visual inspection confirms signals are high quality
+
+Once Phase 4 is complete, you have a complete signal generation system that identifies when to enter and exit momentum trades.

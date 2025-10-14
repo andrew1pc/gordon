@@ -1,0 +1,492 @@
+PHASE 5: RISK MANAGEMENT IMPLEMENTATION STEPS
+
+===================================================================
+Step 5.1.1: Create risk manager module structure
+===================================================================
+
+Create strategy/risk_manager.py with a RiskManager class. Include attributes in __init__:
+- account_size: float (total capital)
+- risk_per_trade: float (default 0.01 = 1%)
+- max_positions: int (default 8)
+- max_portfolio_exposure: float (default 0.25 = 25%)
+- max_sector_exposure: float (default 0.15 = 15%)
+- max_daily_loss: float (default 0.03 = 3%)
+- positions: dict {ticker: Position} (currently open positions)
+- daily_pnl: float (running P&L for the day)
+
+Create skeleton methods:
+- calculate_position_size(entry_price, stop_loss, asset_type)
+- can_add_position(ticker, size, sector)
+- add_position(position)
+- remove_position(ticker)
+- update_daily_pnl(pnl_change)
+- check_daily_loss_limit()
+- get_portfolio_exposure()
+- get_sector_exposure()
+- validate_new_trade(ticker, entry_price, stop_loss, sector, asset_type)
+
+Use type hints and comprehensive docstrings.
+
+===================================================================
+Step 5.1.2: Implement position sizing calculation
+===================================================================
+
+Implement calculate_position_size method in strategy/risk_manager.py:
+
+Position sizing formula:
+position_size = (account_size × risk_per_trade) / (entry_price - stop_loss)
+
+Example:
+- Account: $100,000
+- Risk per trade: 1% = $1,000
+- Entry: $100
+- Stop: $92
+- Risk per share: $8
+- Position size: $1,000 / $8 = 125 shares = $12,500 position
+
+The method should:
+- Calculate position size in shares/units
+- Calculate position value in dollars
+- Ensure position doesn't exceed maximum position size (e.g., 5% of account)
+- Round to appropriate lot sizes:
+  - Stocks: round to whole shares
+  - Crypto: round to appropriate decimal places (e.g., 0.001 BTC)
+- Return dict with:
+  - shares/units
+  - position_value
+  - risk_amount
+  - percent_of_account
+- Log the calculation details
+
+Handle edge cases:
+- Very tight stops (position would be too large)
+- Very wide stops (position would be too small)
+- Set min/max position sizes
+
+===================================================================
+Step 5.1.3: Implement position size constraints
+===================================================================
+
+Add validation to calculate_position_size:
+
+Constraints:
+1. Maximum position size: 5% of account (even if stop is tight)
+2. Minimum position size: 1% of account (if stop is wide, skip trade)
+3. For crypto: consider exchange minimum order sizes
+4. Adjust for asset_type volatility:
+   - Crypto positions may be smaller due to higher volatility
+   - Apply multiplier: crypto_size = stock_size × 0.7
+
+Return None if constraints can't be satisfied (position too large or too small).
+
+===================================================================
+Step 5.1.4: Implement portfolio exposure tracking
+===================================================================
+
+Implement get_portfolio_exposure method:
+
+Calculate current portfolio metrics:
+- Total position value (sum of all open positions)
+- Portfolio exposure percentage = total_position_value / account_size
+- Number of open positions
+- Available buying power
+- Exposure by asset type (stocks vs crypto)
+
+Return dict with all metrics.
+
+This helps monitor overall portfolio risk.
+
+===================================================================
+Step 5.1.5: Implement maximum position check
+===================================================================
+
+Implement can_add_position method:
+
+Check if new position would violate limits:
+1. Max concurrent positions (default 8):
+   - Count current positions
+   - Return False if at limit
+   
+2. Max portfolio exposure (default 25%):
+   - Calculate current exposure + proposed new position
+   - Return False if would exceed limit
+   
+3. Account for correlation:
+   - Don't allow too many positions in same sector
+   - Use max_sector_exposure limit
+
+Return tuple: (can_add: bool, reason: str)
+- If can_add is False, reason explains why
+
+This prevents over-leveraging the portfolio.
+
+===================================================================
+Step 5.1.6: Implement sector exposure tracking
+===================================================================
+
+Implement get_sector_exposure method:
+
+Track exposure by sector (for stocks):
+- Maintain sector mapping: {ticker: sector}
+- Calculate total position value per sector
+- Calculate sector exposure as % of account
+- Return dict: {sector: {'value': float, 'percent': float, 'tickers': list}}
+
+Also implement check_sector_limit:
+- Take proposed new position (ticker, size, sector)
+- Check if adding it would exceed max_sector_exposure (default 15%)
+- Return (allowed: bool, current_exposure: float)
+
+This prevents overconcentration in single sectors (e.g., all tech stocks).
+
+===================================================================
+Step 5.1.7: Implement daily loss limit
+===================================================================
+
+Implement daily loss tracking and limits:
+
+update_daily_pnl method:
+- Add P&L changes as positions are closed
+- Track running total for the day
+- Reset daily_pnl at start of each trading day
+
+check_daily_loss_limit method:
+- Check if daily_pnl < (account_size × -max_daily_loss)
+- Default max_daily_loss = 3% of account
+- If limit hit: return True (stop trading for the day)
+- Log warning when approaching limit (at -2%)
+
+This is a circuit breaker to prevent catastrophic loss days.
+
+===================================================================
+Step 5.1.8: Implement comprehensive trade validation
+===================================================================
+
+Implement validate_new_trade method that checks ALL risk rules:
+
+Takes parameters:
+- ticker
+- entry_price
+- stop_loss
+- sector (for stocks)
+- asset_type
+
+Validation checks (in order):
+1. Daily loss limit not hit
+2. Position sizing valid (not too large or small)
+3. Can add another position (not at max positions)
+4. Portfolio exposure would not exceed limit
+5. Sector exposure would not exceed limit (stocks only)
+6. Not already in position for this ticker
+
+Return dict:
+{
+  'approved': bool,
+  'position_size': int or None,
+  'position_value': float or None,
+  'violations': list of strings (reasons for rejection),
+  'warnings': list of strings (approaching limits)
+}
+
+This is called before every trade to ensure risk rules are followed.
+
+===================================================================
+Step 5.1.9: Implement position tracking
+===================================================================
+
+Implement position management methods:
+
+add_position(position):
+- Add Position object to self.positions dict
+- Update portfolio exposure
+- Update sector exposure
+- Log new position
+
+remove_position(ticker):
+- Remove from self.positions
+- Update exposures
+- Calculate realized P&L
+- Update daily_pnl
+- Log position closure
+
+update_position(ticker, **kwargs):
+- Update Position attributes (e.g., trailing_stop)
+- Recalculate metrics if needed
+
+get_position(ticker):
+- Return Position object or None
+
+get_all_positions():
+- Return list of all open Position objects
+
+===================================================================
+Step 5.2.1: Implement correlation checking (advanced)
+===================================================================
+
+Add check_correlation method:
+
+Prevent taking too many correlated positions:
+- For stocks: check if tickers are in same sector
+- Could extend to: calculate actual price correlation if desired
+- Warn if adding highly correlated position
+- Consider rejecting if correlation too high and sector exposure already elevated
+
+This prevents "diversification illusion" where you think you're diversified but all positions move together.
+
+===================================================================
+Step 5.2.2: Implement dynamic position sizing (advanced)
+===================================================================
+
+Add dynamic_position_sizing method:
+
+Adjust position sizes based on recent performance:
+- If last 5 trades were winners: increase risk_per_trade slightly (1% → 1.2%)
+- If last 5 trades were losers: decrease risk_per_trade (1% → 0.7%)
+- Never go above 2% or below 0.5% risk per trade
+- Reset to default (1%) periodically
+
+This helps capitalize on winning streaks and preserve capital during drawdowns.
+
+===================================================================
+Step 5.2.3: Implement emergency stop-out
+===================================================================
+
+Add emergency_stop_out method:
+
+Triggered when daily loss limit hit or other emergency conditions:
+- Close all open positions immediately
+- Log emergency stop-out event with reason
+- Calculate total realized loss
+- Lock trading for remainder of day
+- Send alert (email/Slack if configured)
+- Return summary of closed positions
+
+This is the "kill switch" for extreme situations.
+
+===================================================================
+Step 5.2.4: Implement risk metrics reporting
+===================================================================
+
+Add get_risk_metrics method that returns comprehensive risk report:
+
+Metrics to include:
+- Current number of positions
+- Total portfolio exposure ($ and %)
+- Exposure by asset type (stocks vs crypto)
+- Exposure by sector
+- Largest position size ($ and % of account)
+- Average position size
+- Total capital at risk (sum of all stop losses)
+- Risk as % of account
+- Daily P&L (current session)
+- Distance to daily loss limit
+- Available buying power
+- Current risk_per_trade setting
+
+Return as dict with all metrics.
+
+This provides a dashboard view of portfolio risk.
+
+===================================================================
+Step 5.2.5: Create risk configuration
+===================================================================
+
+Add to config/strategy_config.py a RiskConfig class:
+
+```python
+class RiskConfig:
+    # Position sizing
+    RISK_PER_TRADE = 0.01  # 1% of account per trade
+    MIN_POSITION_SIZE_PCT = 0.01  # 1% of account minimum
+    MAX_POSITION_SIZE_PCT = 0.05  # 5% of account maximum
+    
+    # Portfolio limits
+    MAX_POSITIONS = 8
+    MAX_PORTFOLIO_EXPOSURE = 0.25  # 25% of account
+    MAX_SECTOR_EXPOSURE = 0.15  # 15% per sector
+    
+    # Asset type adjustments
+    CRYPTO_POSITION_MULTIPLIER = 0.7  # Reduce crypto positions due to volatility
+    
+    # Daily limits
+    MAX_DAILY_LOSS_PCT = 0.03  # 3% daily loss limit
+    DAILY_LOSS_WARNING_PCT = 0.02  # Warn at 2%
+    
+    # Dynamic sizing
+    ENABLE_DYNAMIC_SIZING = False
+    DYNAMIC_SIZE_MIN = 0.005  # 0.5% minimum
+    DYNAMIC_SIZE_MAX = 0.02  # 2% maximum
+    
+    # Correlation
+    MAX_CORRELATED_POSITIONS = 3
+```
+
+Allow loading from YAML for easy tuning.
+
+===================================================================
+Step 5.2.6: Create unit tests for risk management
+===================================================================
+
+Create tests/test_risk_manager.py with comprehensive pytest tests:
+
+Test fixtures:
+- RiskManager with $100,000 account
+- Sample Position objects
+- Mock portfolio states (empty, half-full, at-limit)
+
+Tests:
+- test_position_sizing_calculation - verify formula correctness
+- test_position_size_constraints - test min/max limits
+- test_position_size_tight_stop - very tight stop should limit size
+- test_position_size_wide_stop - very wide stop may be too small
+- test_can_add_position_under_limit - should allow when under limits
+- test_can_add_position_at_max_positions - should reject at 8 positions
+- test_can_add_position_max_exposure - should reject if exceeds 25%
+- test_sector_exposure_tracking - verify sector calculations
+- test_sector_exposure_limit - reject if sector would exceed 15%
+- test_daily_loss_tracking - verify P&L accumulation
+- test_daily_loss_limit_trigger - should stop trading at -3%
+- test_validate_trade_all_pass - valid trade should approve
+- test_validate_trade_multiple_violations - should list all violations
+- test_add_remove_position - verify position tracking
+- test_portfolio_exposure_calculation - verify total exposure math
+- test_crypto_position_sizing - verify 0.7x multiplier applied
+- test_emergency_stop_out - verify all positions closed
+
+Use parametrized tests for various scenarios.
+
+===================================================================
+Step 5.2.7: Create integration test with signals
+===================================================================
+
+Create integration test that combines Phase 4 (signals) and Phase 5 (risk):
+
+Test scenario:
+1. Start with $100,000 account
+2. Generate multiple entry signals
+3. For each signal:
+   - Validate with RiskManager
+   - Calculate position size
+   - Track position
+4. Simulate some exits (stops and targets)
+5. Verify:
+   - No position exceeds 5% of account
+   - Total exposure stays under 25%
+   - Sector limits respected
+   - Daily loss limit not violated
+   - Position sizing adjusted correctly
+
+This tests that risk management integrates properly with signal generation.
+
+===================================================================
+Step 5.2.8: Create risk monitoring dashboard script
+===================================================================
+
+Create monitor_risk.py that displays real-time risk dashboard:
+
+Display:
+1. Account Summary:
+   - Total capital
+   - Available buying power
+   - Current positions (count)
+   - Total exposure ($ and %)
+
+2. Position Details Table:
+   - Ticker | Entry Price | Current Price | Size | Value | P&L | Risk
+
+3. Risk Metrics:
+   - Risk per trade setting
+   - Total capital at risk
+   - Daily P&L
+   - Distance to daily loss limit
+
+4. Exposure Breakdown:
+   - By asset type (stocks/crypto)
+   - By sector (for stocks)
+   - Visual bar charts
+
+5. Alerts/Warnings:
+   - Approaching any limits
+   - Positions with large unrealized losses
+   - Correlation warnings
+
+Update display every 5 seconds (or manual refresh).
+
+Use rich library or simple text formatting for terminal display.
+
+===================================================================
+Step 5.2.9: Create position sizing calculator script
+===================================================================
+
+Create calculate_position_size.py interactive tool:
+
+Prompts user for:
+- Entry price
+- Stop loss price
+- Asset type (stock/crypto)
+- Sector (if stock)
+
+Calculates and displays:
+- Risk per share/unit
+- Position size in shares/units
+- Total position value
+- Risk amount ($)
+- Risk as % of account
+- Position as % of account
+- Whether trade is approved
+- Any risk rule violations
+
+This helps manually validate position sizing before placing trades.
+
+===================================================================
+Step 5.2.10: Create risk validation script
+===================================================================
+
+Create validate_risk_management.py that:
+
+1. Simulates various portfolio scenarios:
+   - Empty portfolio → add positions one by one
+   - Portfolio at 20% exposure → try to add more
+   - 7 positions open → try to add 8th and 9th
+   - Large loss day → verify daily loss limit triggers
+   - Overconcentrated sector → verify rejection
+
+2. For each scenario:
+   - Show before state
+   - Attempt action
+   - Show validation result
+   - Show after state
+   - Verify correct behavior
+
+3. Test edge cases:
+   - Tiny stops (position would be huge)
+   - Huge stops (position would be tiny)
+   - Very low capital
+   - Maximum leverage scenarios
+
+4. Generate report:
+   - All scenarios tested
+   - Pass/fail for each
+   - Any unexpected behaviors
+
+Include detailed output explaining each test.
+
+===================================================================
+PHASE 5 SUCCESS CRITERIA
+===================================================================
+
+✅ Position sizing formula implemented correctly
+✅ Position size constraints enforced (min/max)
+✅ Maximum positions limit enforced (8)
+✅ Portfolio exposure limit enforced (25%)
+✅ Sector exposure limit enforced (15%)
+✅ Daily loss limit circuit breaker works (-3%)
+✅ Trade validation checks all rules before approval
+✅ Position tracking accurate (add/remove/update)
+✅ Crypto positions adjusted for higher volatility
+✅ Risk metrics reporting comprehensive
+✅ All tests pass with >80% coverage
+✅ Integration with signals works correctly
+✅ Dashboard provides clear risk visibility
+
+Once Phase 5 is complete, you have a robust risk management system that protects capital and prevents over-leveraging.

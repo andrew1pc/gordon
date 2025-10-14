@@ -1,0 +1,293 @@
+PHASE 3: ASSET SELECTION IMPLEMENTATION STEPS
+
+===================================================================
+Step 3.1.1: Create asset scanner module structure
+===================================================================
+
+Create strategy/scanner.py with an AssetScanner class. Add an __init__ method that takes a TiingoClient instance. Create skeleton methods for:
+- get_stock_universe(min_market_cap, min_volume) - Fetch qualifying stocks
+- get_crypto_universe(top_n) - Fetch top N cryptos by market cap
+- filter_by_liquidity(tickers, min_daily_volume) - Remove illiquid assets
+- cache_universe_data(universe, cache_file) - Save universe to avoid repeated API calls
+- load_universe_data(cache_file) - Load cached universe
+
+Include docstrings explaining the purpose of each method and parameters.
+
+===================================================================
+Step 3.1.2: Implement stock universe definition
+===================================================================
+
+Implement the get_stock_universe method in strategy/scanner.py. It should:
+- Fetch a list of all available stocks from Tiingo (or use a predefined list of major exchange tickers)
+- For each ticker, get fundamental data (market cap, average volume)
+- Filter to keep only stocks with:
+  - Market cap >= min_market_cap (default $500M)
+  - Average daily volume >= min_volume (default $5M)
+  - Price >= $5 (avoid penny stocks)
+- Return a list of qualifying ticker symbols
+- Log the filtering process (how many started, how many passed each filter)
+- Handle API errors gracefully (some tickers may fail to fetch)
+
+Note: This may require many API calls, so implement rate limiting and consider caching results.
+
+===================================================================
+Step 3.1.3: Implement crypto universe definition
+===================================================================
+
+Implement the get_crypto_universe method in strategy/scanner.py. It should:
+- Fetch available crypto tickers from Tiingo
+- Get market cap data for each crypto
+- Sort by market cap descending
+- Return the top N tickers (default top 50)
+- Filter out stablecoins (USDT, USDC, DAI, etc.) as they don't have momentum
+- Filter out assets with insufficient trading history (< 1 year of data)
+- Return list of qualifying crypto ticker symbols (format: 'btcusd', 'ethusd', etc.)
+- Log the selection process
+
+Handle the case where Tiingo may not have market cap data for all cryptos.
+
+===================================================================
+Step 3.1.4: Implement liquidity filtering
+===================================================================
+
+Implement the filter_by_liquidity method in strategy/scanner.py. It should:
+- Take a list of tickers and minimum daily volume threshold
+- For each ticker, fetch recent volume data (last 30 days)
+- Calculate average daily volume
+- Remove tickers where average volume < threshold
+- For stocks: volume threshold in dollars (price * volume)
+- For crypto: volume threshold in dollars
+- Return filtered list of tickers
+- Log how many tickers were removed and why
+
+This ensures we only trade assets with sufficient liquidity to enter/exit positions.
+
+===================================================================
+Step 3.1.5: Implement universe caching
+===================================================================
+
+Implement cache_universe_data and load_universe_data methods in strategy/scanner.py:
+
+cache_universe_data should:
+- Take a universe dict with structure: {'stocks': [list], 'crypto': [list], 'metadata': {...}}
+- Serialize to JSON file with timestamp
+- Store in a cache/ directory
+- Include metadata: date_created, filters_applied, counts
+
+load_universe_data should:
+- Load JSON from cache file
+- Check if cache is stale (> 7 days old for stocks, > 1 day for crypto)
+- Return None if cache is stale or missing
+- Return universe dict if cache is valid
+- Log cache hit/miss
+
+This prevents repeatedly fetching universe data, which can be slow and hit API rate limits.
+
+===================================================================
+Step 3.2.1: Fetch universe historical data
+===================================================================
+
+Add a fetch_universe_prices method to AssetScanner that:
+- Takes a list of tickers and date range
+- Fetches OHLCV data for all tickers in the universe
+- Returns a dictionary: {ticker: DataFrame}
+- Implements parallel fetching if possible (be mindful of API rate limits)
+- Handles individual ticker failures gracefully (skip and log)
+- Shows progress (e.g., "Fetching 1/100...")
+- Saves results to cache for faster subsequent runs
+
+This prepares all the data needed for momentum analysis.
+
+===================================================================
+Step 3.2.2: Apply technical indicators to universe
+===================================================================
+
+Add a prepare_universe_data method to AssetScanner that:
+- Takes the dictionary of price DataFrames from fetch_universe_prices
+- For each ticker's DataFrame:
+  - Apply prepare_dataframe_for_analysis() from Phase 2
+  - This adds all technical indicators and momentum metrics
+- Handle errors for individual tickers (insufficient data, etc.)
+- Return updated dictionary with all indicators calculated
+- Log any tickers that failed preparation
+
+This prepares all universe assets for momentum scoring.
+
+===================================================================
+Step 3.2.3: Implement momentum ranking
+===================================================================
+
+Add a rank_universe_by_momentum method to AssetScanner that:
+- Takes the prepared universe data (dict of DataFrames with indicators)
+- Extract the most recent momentum_score for each ticker
+- Use MomentumMetrics.rank_assets() to create ranking
+- Add additional columns to ranking:
+  - asset_type ('stock' or 'crypto')
+  - current_price
+  - volume_surge (boolean)
+  - days_since_20d_high
+- Sort by momentum_score descending
+- Return ranking DataFrame
+
+This identifies the top momentum candidates from the entire universe.
+
+===================================================================
+Step 3.2.4: Implement candidate selection
+===================================================================
+
+Add a select_top_candidates method to AssetScanner that:
+- Takes the ranking DataFrame
+- Applies additional filters:
+  - momentum_score >= 70 (strong momentum threshold)
+  - RSI between 50-70 (strong but not overbought)
+  - trend_strength >= 60
+  - Price above both 50-day and 200-day MA
+  - No more than 3 assets from same sector (for stocks)
+- Select top N candidates (default 10-15)
+- Separate selections for stocks and crypto if desired
+- Return DataFrame of selected candidates
+- Log selection criteria and how many passed each filter
+
+These are the assets that will generate entry signals.
+
+===================================================================
+Step 3.2.5: Implement sector diversification (stocks)
+===================================================================
+
+Add a check_sector_diversification method to AssetScanner that:
+- Takes a list of stock tickers
+- Fetches sector information for each (from Tiingo or use a sector mapping file)
+- Counts tickers per sector
+- Identifies overconcentration (> 3 tickers in same sector)
+- Suggests which tickers to remove to improve diversification
+- Return diversified list of tickers
+
+This prevents overconcentration in a single sector (e.g., all tech stocks).
+
+===================================================================
+Step 3.2.6: Create scanner workflow orchestration
+===================================================================
+
+Add a run_daily_scan method to AssetScanner that orchestrates the full scanning process:
+1. Try to load cached universe, if stale or missing:
+   - Get stock universe
+   - Get crypto universe
+   - Cache the universe
+2. Fetch historical prices for universe (use cache if available)
+3. Prepare all data (add indicators and momentum metrics)
+4. Rank all assets by momentum
+5. Select top candidates using filters
+6. Apply sector diversification
+7. Return final candidate list with all relevant data
+8. Log summary statistics (universe size, candidates found, time elapsed)
+
+This single method executes the complete daily scanning workflow.
+
+===================================================================
+Step 3.2.7: Create unit tests for scanner
+===================================================================
+
+Create tests/test_scanner.py with pytest tests for AssetScanner:
+
+Test fixtures:
+- Mock TiingoClient that returns predetermined data
+- Sample universe of 20 stocks + 10 cryptos
+- Mix of high/medium/low momentum assets
+- Assets with various sector classifications
+
+Tests:
+- test_stock_universe_filtering - verify market cap and volume filters work
+- test_crypto_universe_selection - verify top N by market cap
+- test_liquidity_filtering - verify volume threshold filtering
+- test_cache_operations - test saving and loading universe cache
+- test_universe_data_preparation - verify indicators applied to all assets
+- test_momentum_ranking - verify correct ranking by momentum score
+- test_candidate_selection - verify filters applied correctly
+- test_sector_diversification - verify no overconcentration
+- test_run_daily_scan_integration - test full workflow end-to-end
+- test_error_handling - test behavior when tickers fail to fetch
+
+Use mocks to avoid making real API calls in tests.
+
+===================================================================
+Step 3.2.8: Create configuration for scanner
+===================================================================
+
+Create config/strategy_config.py with configuration parameters:
+
+ScannerConfig class with attributes:
+- STOCK_MIN_MARKET_CAP = 500_000_000
+- STOCK_MIN_VOLUME = 5_000_000
+- STOCK_MIN_PRICE = 5.0
+- CRYPTO_TOP_N = 50
+- CRYPTO_MIN_VOLUME = 1_000_000
+- MOMENTUM_THRESHOLD = 70
+- RSI_MIN = 50
+- RSI_MAX = 70
+- TREND_STRENGTH_MIN = 60
+- MAX_CANDIDATES = 15
+- MAX_PER_SECTOR = 3
+- CACHE_EXPIRY_DAYS_STOCKS = 7
+- CACHE_EXPIRY_DAYS_CRYPTO = 1
+
+Include docstrings explaining each parameter and how to tune them.
+
+Allow loading from YAML file for easy modification without code changes.
+
+===================================================================
+Step 3.2.9: Create visualization for scan results
+===================================================================
+
+Create a script visualize_scan_results.py that:
+1. Runs AssetScanner.run_daily_scan()
+2. Creates visualizations:
+   - Bar chart of top 20 candidates by momentum_score
+   - Scatter plot: RSI vs ROC, colored by momentum_score
+   - Heatmap showing which filters each candidate passed
+   - Distribution histogram of momentum scores across universe
+   - Sector breakdown (for stocks)
+3. Prints detailed candidate table with all key metrics
+4. Saves visualizations to output/ directory
+
+This helps validate that the scanner is finding appropriate candidates.
+
+===================================================================
+Step 3.2.10: Create end-to-end validation script
+===================================================================
+
+Create validate_scanner.py that:
+1. Runs a full scan with current date
+2. Validates the results:
+   - Check all candidates have momentum_score >= threshold
+   - Check all candidates have required indicators
+   - Check sector diversification rules followed
+   - Check no illiquid assets included
+3. Manually inspect top 5 candidates:
+   - Fetch their recent price charts
+   - Verify they visually show strong momentum
+   - Check news/fundamentals aren't obviously negative
+4. Generate a detailed report:
+   - Universe statistics
+   - Filtering funnel (how many passed each stage)
+   - Top candidates with reasoning
+   - Recommendations for parameter tuning
+5. Compare to a manual scan (provide TradingView links for top candidates)
+
+Include detailed output explaining whether the scanner is working correctly.
+
+===================================================================
+PHASE 3 SUCCESS CRITERIA
+===================================================================
+
+✅ Scanner can fetch and filter stock universe (200-500 stocks)
+✅ Scanner can fetch and filter crypto universe (30-50 cryptos)
+✅ All assets have technical indicators and momentum scores calculated
+✅ Ranking correctly identifies high momentum assets
+✅ Filters produce 10-15 quality candidates
+✅ Sector diversification prevents overconcentration
+✅ Caching works and improves performance
+✅ Full scan completes in < 10 minutes
+✅ All tests pass with >80% coverage
+✅ Visual inspection confirms candidates show strong momentum
+
+Once Phase 3 is complete, you have a system that identifies tradeable momentum opportunities from a large universe of assets.

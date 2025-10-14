@@ -1,0 +1,126 @@
+2025-10-14 11:22:52,408 - numexpr.utils - INFO - NumExpr defaulting to 8 threads.
+
+================================================================================
+  Tiingo Data Validation Script
+================================================================================
+
+This script fetches and validates financial data from Tiingo API
+
+✓ Connected to Tiingo API: https://api.tiingo.com
+
+================================================================================
+  Validating AAPL (STOCK)
+================================================================================
+
+  Fetching data from 2025-08-15 to 2025-10-14...
+  ✓ Fetched 41 rows of data
+
+  Running validation pipeline...
+  ✓ Validation complete
+
+--------------------------------------------------------------------------------
+  Validation Issues
+--------------------------------------------------------------------------------
+
+  Found 2 issue(s):
+
+  1. [MISSING_DATES]
+     Found 1 missing business days (may include holidays)
+     Sample dates: 2025-09-01
+
+  2. [GAP_FILLED]
+     Forward-filled 1-day gap from 2025-09-01 to 2025-09-01
+     Gap size: 1 days
+
+
+--------------------------------------------------------------------------------
+  Summary Statistics for AAPL
+--------------------------------------------------------------------------------
+
+  Asset Type: stock
+  Rows before cleaning: 41
+  Rows after cleaning:  42
+  Rows removed:         -1
+  Date range:           2025-08-15 to 2025-10-13
+  Total issues found:   2
+
+  Issues by Type:
+    - gap_filled: 1
+    - missing_dates: 1
+
+  Data Quality Metrics:
+    Average volume:    50,934,777
+    Min close price:   $224.90
+    Max close price:   $258.06
+    Price change:      +6.94%
+
+  Post-Validation Checks:
+    Contains null values:      ✓ No
+    Contains duplicate dates:  ✓ No
+    Index sorted:              ✓ Yes
+
+================================================================================
+  Validating btcusd (CRYPTO)
+================================================================================
+
+  Fetching data from 2025-08-15 to 2025-10-14...
+  ✓ Fetched 61 rows of data
+
+  Running validation pipeline...
+  ✓ Validation complete
+
+--------------------------------------------------------------------------------
+  Validation Issues
+--------------------------------------------------------------------------------
+  ✓ No issues found - data is clean!
+
+--------------------------------------------------------------------------------
+  Summary Statistics for btcusd
+--------------------------------------------------------------------------------
+
+  Asset Type: crypto
+  Rows before cleaning: 61
+  Rows after cleaning:  61
+  Rows removed:         0
+  Date range:           2025-08-15 to 2025-10-14
+  Total issues found:   0
+
+  Data Quality Metrics:
+    Average volume:    8,783
+    Min close price:   $108269.17
+    Max close price:   $124719.79
+    Price change:      -5.20%
+
+  Post-Validation Checks:
+    Contains null values:      ✓ No
+    Contains duplicate dates:  ✓ No
+    Index sorted:              ✓ Yes
+
+================================================================================
+  Overall Validation Report
+================================================================================
+
+  Total assets validated:  2
+  Successful validations:  2
+  Failed validations:      0
+
+  Asset Summary:
+
+    AAPL:
+      Status:        ⚠ 2 issue(s)
+      Rows:          42 (-1 removed)
+      Date range:    2025-08-15 to 2025-10-13
+      Asset type:    stock
+
+    BTCUSD:
+      Status:        ✓ Clean
+      Rows:          61 (0 removed)
+      Date range:    2025-08-15 to 2025-10-14
+      Asset type:    crypto
+
+================================================================================
+  Validation Complete
+================================================================================
+
+✓ All validations finished successfully!
+

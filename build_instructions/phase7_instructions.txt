@@ -1,0 +1,725 @@
+PHASE 7: INTEGRATION & PAPER TRADING IMPLEMENTATION STEPS
+
+===================================================================
+Step 7.1.1: Create main strategy orchestration module
+===================================================================
+
+Create main.py with a MomentumStrategy class that orchestrates all components.
+
+Include attributes in __init__:
+- config: StrategyConfig (loaded from YAML)
+- tiingo_client: TiingoClient
+- scanner: AssetScanner
+- signal_generator: SignalGenerator
+- risk_manager: RiskManager
+- mode: str ('backtest' or 'paper' or 'live')
+- paper_portfolio: dict (for paper trading state)
+- trade_log: list (all trades executed)
+
+Create skeleton methods:
+- load_config(config_path) - Load configuration from YAML
+- initialize_components() - Setup all strategy components
+- run_daily(date) - Execute daily trading workflow
+- scan_and_select_candidates(date) - Find tradeable opportunities
+- process_signals(date) - Check entries and exits
+- execute_approved_trades(trades) - Execute validated trades
+- update_positions(date) - Update all position states
+- generate_daily_report(date) - Create end-of-day summary
+- send_alerts(alerts) - Send notifications
+- save_state(filepath) - Persist portfolio state
+- load_state(filepath) - Resume from saved state
+
+Use comprehensive docstrings and type hints.
+
+===================================================================
+Step 7.1.2: Implement configuration management
+===================================================================
+
+Implement load_config method and create config/strategy_config.yaml:
+
+YAML structure:
+```yaml
+api:
+  tiingo_api_key: ${TIINGO_API_KEY}  # Load from environment
+
+scanner:
+  stock_min_market_cap: 500000000
+  stock_min_volume: 5000000
+  crypto_top_n: 50
+  momentum_threshold: 70
+  max_candidates: 15
+  rescan_interval_days: 5
+
+signals:
+  entry:
+    rsi_min: 50
+    rsi_max: 70
+    require_volume_surge: true
+    volume_surge_threshold: 1.5
+  exit:
+    profit_target_stock: 0.20  # 20%
+    profit_target_crypto: 0.30  # 30%
+    stop_loss_stock: 0.08  # 8%
+    stop_loss_crypto: 0.12  # 12%
+    trailing_stop_activation: 0.10  # Activate at 10% gain
+    trailing_stop_distance: 0.08  # 8% below high
+    max_holding_days: 30
+
+risk:
+  initial_capital: 100000
+  risk_per_trade: 0.01  # 1%
+  max_positions: 8
+  max_portfolio_exposure: 0.25
+  max_sector_exposure: 0.15
+  max_daily_loss: 0.03
+
+trading:
+  mode: paper  # backtest, paper, or live
+  slippage_stock: 0.001
+  slippage_crypto: 0.003
+  commission_stock: 0.0
+  commission_crypto: 0.001
+
+alerts:
+  email_enabled: false
+  email_address: null
+  slack_webhook: null
+  alert_on_entry: true
+  alert_on_exit: true
+  alert_on_risk_limit: true
+
+logging:
+  level: INFO
+  log_file: logs/momentum_strategy.log
+  save_daily_snapshots: true
+  snapshot_dir: snapshots/
+```
+
+Load with PyYAML and environment variable substitution.
+
+===================================================================
+Step 7.1.3: Implement component initialization
+===================================================================
+
+Implement initialize_components method:
+
+Initialize all strategy components with config:
+1. Create TiingoClient with API key
+2. Create AssetScanner with TiingoClient and scanner config
+3. Create SignalGenerator with signal config
+4. Create RiskManager with risk config
+5. Setup logging (file and console)
+6. Create necessary directories (logs/, snapshots/, output/)
+7. Load any saved state if resuming
+8. Validate all components are ready
+
+The method should:
+- Handle initialization errors gracefully
+- Validate configuration values
+- Test API connection
+- Log initialization status
+- Return True if successful, False otherwise
+
+===================================================================
+Step 7.1.4: Implement daily workflow orchestration
+===================================================================
+
+Implement run_daily method that executes the full trading workflow:
+
+Daily workflow:
+1. Log start of daily cycle with timestamp
+2. Scan for candidates (or use cached scan)
+3. Fetch current data for:
+   - All candidates
+   - All open positions
+4. Check exit signals for open positions
+5. Execute exits (stop losses first, then targets)
+6. Update account and risk manager after exits
+7. Check entry signals for candidates
+8. Validate entries with risk manager
+9. Execute approved entries
+10. Update all position states (trailing stops, P&L)
+11. Generate daily report
+12. Save portfolio state
+13. Send alerts if configured
+14. Log end of daily cycle
+
+The method should:
+- Take date parameter (for backtesting and paper trading)
+- Handle errors at each step without crashing
+- Continue even if some operations fail
+- Log all activities
+- Return dict with day's results
+
+This is the main entry point for daily operation.
+
+===================================================================
+Step 7.1.5: Implement candidate scanning workflow
+===================================================================
+
+Implement scan_and_select_candidates method:
+
+Workflow:
+1. Check if cached scan is still valid (< 5 days old)
+2. If cache invalid or first run:
+   - Run AssetScanner.run_daily_scan()
+   - Cache results with timestamp
+3. If cache valid:
+   - Load cached candidates
+   - Update momentum scores for cached tickers only
+4. Filter candidates:
+   - Remove any tickers already in positions
+   - Apply additional filters from config
+5. Sort by momentum_score descending
+6. Select top N (from config.scanner.max_candidates)
+7. Return candidate list with details
+
+The method should:
+- Minimize API calls by using cache
+- Log cache hits/misses
+- Handle scan failures gracefully
+- Return empty list if no candidates found
+
+===================================================================
+Step 7.1.6: Implement signal processing
+===================================================================
+
+Implement process_signals method:
+
+Process both entry and exit signals:
+
+Exit processing:
+1. For each open position:
+   - Get current price data
+   - Check all exit conditions
+   - If exit triggered, create exit trade
+2. Validate exits (always allowed, no risk checks needed)
+3. Sort by priority (stops > targets > trailing > momentum > time)
+4. Return list of exit trades
+
+Entry processing:
+1. For each candidate:
+   - Get current price data with indicators
+   - Check entry conditions
+   - If signal found, create entry trade
+2. Validate entries with RiskManager
+3. Sort by signal strength
+4. Take only as many as RiskManager allows
+5. Return list of approved entry trades
+
+The method should:
+- Process exits before entries (free up capital)
+- Log all signals found and validation results
+- Return dict: {'exits': list, 'entries': list}
+
+===================================================================
+Step 7.1.7: Implement trade execution for paper trading
+===================================================================
+
+Implement execute_approved_trades method for paper trading mode:
+
+For each trade:
+1. Calculate realistic fill price (with slippage)
+2. For entries:
+   - Calculate shares based on position size
+   - Deduct from paper_portfolio['cash']
+   - Create Position object
+   - Add to risk_manager.positions
+   - Log entry with all details
+3. For exits:
+   - Calculate proceeds (shares × price - slippage - commission)
+   - Add to paper_portfolio['cash']
+   - Calculate realized P&L
+   - Remove from risk_manager.positions
+   - Log exit with P&L
+4. Record trade in trade_log
+5. Update daily P&L
+
+The method should:
+- Simulate realistic execution
+- Apply slippage and commissions
+- Update all accounting correctly
+- Validate sufficient cash for entries
+- Handle errors (insufficient cash, missing data)
+- Log all executions
+
+Note: This is simulation only - no real orders placed.
+
+===================================================================
+Step 7.1.8: Implement position state updates
+===================================================================
+
+Implement update_positions method:
+
+For each open position:
+1. Fetch current price data
+2. Update position's current_price
+3. Calculate unrealized P&L
+4. Update highest_price (for trailing stops)
+5. Update trailing_stop if applicable:
+   - If price > entry × 1.10 and trailing not active: activate
+   - If trailing active and new high: move trailing stop up
+6. Check if approaching exit levels:
+   - Near profit target (within 5%)
+   - Near stop loss (within 2%)
+7. Calculate position's contribution to portfolio value
+8. Update position age (days held)
+
+The method should:
+- Handle missing price data gracefully
+- Log significant changes (new highs, trailing stop moves)
+- Update risk manager's portfolio metrics
+- Prepare data for daily report
+
+===================================================================
+Step 7.1.9: Implement daily report generation
+===================================================================
+
+Implement generate_daily_report method:
+
+Create comprehensive end-of-day report with sections:
+
+1. Portfolio Summary:
+   - Date
+   - Total account value
+   - Cash balance
+   - Number of positions
+   - Total position value
+   - Unrealized P&L
+   - Realized P&L (today)
+   - Daily return %
+
+2. Open Positions:
+   Table with columns:
+   - Ticker | Entry Date | Entry Price | Current Price | Shares | Value | P&L $ | P&L % | Days Held
+
+3. Today's Activity:
+   - New entries (if any) with details
+   - Exits (if any) with P&L and reason
+   - Signals found but not taken (with rejection reasons)
+
+4. Risk Metrics:
+   - Portfolio exposure
+   - Risk per position
+   - Sector exposure breakdown
+   - Distance to daily loss limit
+
+5. Upcoming Actions:
+   - Positions near profit targets
+   - Positions approaching stops
+   - Trailing stops active
+
+6. Alerts/Warnings:
+   - Any risk limits approaching
+   - Positions with large unrealized losses
+   - Low momentum scores on open positions
+
+The method should:
+- Format for readability (aligned columns, clear sections)
+- Use color coding if terminal supports it
+- Save to file: reports/daily_report_YYYY-MM-DD.txt
+- Return report as string
+- Include timestamp
+
+===================================================================
+Step 7.1.10: Implement alert system
+===================================================================
+
+Implement send_alerts method:
+
+Alert types:
+1. Entry alerts:
+   - New position opened
+   - Include ticker, entry price, position size, reasoning
+
+2. Exit alerts:
+   - Position closed
+   - Include ticker, exit type, P&L, holding period
+
+3. Risk limit alerts:
+   - Approaching daily loss limit
+   - Approaching max positions
+   - Sector overconcentration
+
+4. Performance alerts:
+   - Daily return > 5% (good day)
+   - Daily return < -2% (bad day)
+   - New equity high
+
+Delivery methods:
+- Email (if configured)
+- Slack webhook (if configured)
+- Log file (always)
+- Console output (always)
+
+The method should:
+- Check alert configuration
+- Format alerts appropriately for each medium
+- Handle delivery failures gracefully
+- Throttle alerts (don't spam)
+- Log all alerts sent
+
+===================================================================
+Step 7.2.1: Implement state persistence
+===================================================================
+
+Implement save_state and load_state methods:
+
+save_state should serialize:
+- Current date
+- paper_portfolio dict (cash, positions, total value)
+- All open Position objects
+- Trade history
+- Daily equity curve
+- Risk manager state
+
+Save to JSON file: snapshots/state_YYYY-MM-DD.json
+
+load_state should:
+- Load JSON file
+- Reconstruct all objects
+- Validate state integrity
+- Return True if successful
+
+This allows resuming paper trading after interruption.
+
+===================================================================
+Step 7.2.2: Create paper trading mode
+===================================================================
+
+Add paper_trading_mode method to MomentumStrategy:
+
+Paper trading workflow:
+1. Initialize with current date
+2. Each day (manually triggered or scheduled):
+   - Fetch current market data
+   - Run run_daily(current_date)
+   - Generate and display report
+   - Send alerts
+   - Save state
+3. Track paper portfolio performance over time
+4. Compare to backtest expectations
+
+The method should:
+- Use real, current market data (not historical)
+- Simulate trades without real orders
+- Maintain separate paper portfolio
+- Log all activity
+- Generate daily reports
+- Allow manual triggering or scheduled execution
+
+===================================================================
+Step 7.2.3: Create command-line interface
+===================================================================
+
+Create CLI in main.py for easy operation:
+
+Commands:
+- `python main.py backtest --start 2022-01-01 --end 2024-01-01`
+  - Run historical backtest
+  
+- `python main.py paper --init`
+  - Initialize paper trading with current date
+  
+- `python main.py paper --run`
+  - Run today's paper trading cycle
+  
+- `python main.py paper --report`
+  - Display current paper portfolio status
+  
+- `python main.py scan`
+  - Run candidate scan and display results
+  
+- `python main.py analyze-trade AAPL`
+  - Analyze entry/exit for specific ticker
+
+Use argparse for CLI parsing.
+
+Include help text explaining each command and options.
+
+===================================================================
+Step 7.2.4: Create scheduler integration
+===================================================================
+
+Create scheduler.py for automated daily execution:
+
+Options:
+1. Cron job (Linux/Mac):
+   - Create cron_schedule.sh script
+   - Run daily at market close (4:05 PM ET)
+   
+2. Task Scheduler (Windows):
+   - Create task_schedule.xml
+   - Configure for daily execution
+   
+3. Python scheduler (cross-platform):
+   - Use schedule library
+   - Run continuously, trigger at specified time
+
+The scheduler should:
+- Execute `python main.py paper --run`
+- Capture output
+- Email on errors
+- Log execution time
+- Handle market holidays (skip execution)
+
+Include setup instructions for each platform.
+
+===================================================================
+Step 7.2.5: Create monitoring dashboard
+===================================================================
+
+Create dashboard.py with web-based monitoring:
+
+Use Streamlit or Dash to create dashboard with tabs:
+
+1. Overview Tab:
+   - Account value chart
+   - Current positions table
+   - Today's P&L
+   - Key metrics
+
+2. Positions Tab:
+   - Detailed position information
+   - Price charts with entry/stop/target levels
+   - Position history
+
+3. Trades Tab:
+   - All trades history
+   - Filter by date, ticker, exit type
+   - Trade statistics
+
+4. Signals Tab:
+   - Recent signals found
+   - Signals taken vs rejected
+   - Rejection reasons
+
+5. Risk Tab:
+   - Current risk metrics
+   - Exposure charts
+   - Risk limits dashboard
+
+6. Performance Tab:
+   - Equity curve
+   - Drawdown chart
+   - Monthly returns heatmap
+   - Performance metrics
+
+The dashboard should:
+- Auto-refresh every 5 minutes
+- Be accessible via web browser
+- Display real-time data
+- Allow drill-down into details
+- Export data to CSV
+
+Run with: `streamlit run dashboard.py`
+
+===================================================================
+Step 7.2.6: Create integration tests
+===================================================================
+
+Create tests/test_integration.py with end-to-end tests:
+
+Test scenarios:
+1. test_full_backtest_run:
+   - Run complete backtest for 1 year
+   - Verify all components work together
+   - Check results are reasonable
+
+2. test_paper_trading_cycle:
+   - Initialize paper portfolio
+   - Run 5 consecutive days
+   - Verify positions tracked correctly
+   - Verify P&L calculated correctly
+
+3. test_entry_to_exit_flow:
+   - Generate entry signal
+   - Execute entry
+   - Update position
+   - Generate exit signal
+   - Execute exit
+   - Verify complete lifecycle
+
+4. test_risk_limits_enforcement:
+   - Simulate approaching risk limits
+   - Verify trades rejected appropriately
+   - Verify circuit breakers work
+
+5. test_error_handling:
+   - Simulate API failures
+   - Simulate missing data
+   - Verify system continues operating
+
+6. test_state_persistence:
+   - Run paper trading day
+   - Save state
+   - Restart from saved state
+   - Verify continuity
+
+Run with: `pytest tests/test_integration.py -v`
+
+===================================================================
+Step 7.2.7: Create logging configuration
+===================================================================
+
+Create logging_config.py with comprehensive logging setup:
+
+Log levels by component:
+- ERROR: Critical failures
+- WARNING: Risk limits, rejections, unusual events
+- INFO: Trades, signals, daily summary
+- DEBUG: Detailed calculations, API calls
+
+Log handlers:
+1. File handler:
+   - logs/momentum_strategy.log (main log)
+   - logs/trades.log (trade-specific)
+   - logs/errors.log (errors only)
+   - Rotate daily, keep 30 days
+
+2. Console handler:
+   - INFO and above
+   - Color-coded by level
+
+3. Alert handler (custom):
+   - ERROR and CRITICAL → send alerts
+
+Log format:
+`[YYYY-MM-DD HH:MM:SS] [LEVEL] [component] message`
+
+Include request ID for tracing operations across components.
+
+===================================================================
+Step 7.2.8: Create validation script
+===================================================================
+
+Create validate_paper_trading.py that tests paper trading:
+
+Validation steps:
+1. Initialize paper portfolio with $100k
+2. Run paper trading for last 30 days (historical data)
+3. Compare paper trading results to backtest results for same period
+4. Verify:
+   - Same signals generated
+   - Same trades executed
+   - Similar P&L (accounting for timing differences)
+   - Risk limits respected
+   - State persistence works
+
+5. Generate comparison report:
+   - Backtest vs Paper differences
+   - Explain any discrepancies
+   - Validate paper trading is working correctly
+
+This ensures paper trading matches backtest behavior.
+
+===================================================================
+Step 7.2.9: Create user documentation
+===================================================================
+
+Create docs/USER_GUIDE.md with comprehensive documentation:
+
+Sections:
+1. Installation and Setup
+   - Requirements
+   - API key configuration
+   - Initial setup
+
+2. Configuration
+   - Explanation of all config parameters
+   - How to tune for your risk tolerance
+   - Recommended starting values
+
+3. Running Backtests
+   - How to run backtest
+   - Interpreting results
+   - Optimizing parameters
+
+4. Paper Trading
+   - Starting paper trading
+   - Daily operation
+   - Monitoring performance
+
+5. Understanding Signals
+   - Entry criteria explained
+   - Exit criteria explained
+   - Why signals are rejected
+
+6. Risk Management
+   - Position sizing explanation
+   - Risk limits explained
+   - How to adjust for your account size
+
+7. Troubleshooting
+   - Common issues and solutions
+   - Error messages explained
+   - Getting help
+
+8. Advanced Topics
+   - Custom indicators
+   - Parameter optimization
+   - Multi-asset allocation
+
+Include examples and screenshots.
+
+===================================================================
+Step 7.2.10: Create deployment checklist
+===================================================================
+
+Create DEPLOYMENT_CHECKLIST.md:
+
+Pre-deployment validation:
+- [ ] All unit tests pass
+- [ ] Integration tests pass
+- [ ] Backtest shows positive results (Sharpe > 1.0)
+- [ ] Paper trading validated against backtest
+- [ ] API credentials configured
+- [ ] Logging working correctly
+- [ ] Alerts configured and tested
+- [ ] Dashboard accessible
+- [ ] Scheduler configured
+- [ ] State persistence tested
+- [ ] Error handling tested
+- [ ] Documentation complete
+
+Paper trading requirements:
+- [ ] Start with small paper capital ($10k)
+- [ ] Run for 30 days minimum
+- [ ] Monitor daily
+- [ ] Compare to backtest expectations
+- [ ] Verify all components working
+- [ ] Review all trades manually
+
+Go-live checklist (if moving to live):
+- [ ] Successful paper trading (60+ days)
+- [ ] Consistent with backtest
+- [ ] Start with small real capital
+- [ ] Double-check all order execution code
+- [ ] Test with 1 position first
+- [ ] Have kill switch ready
+
+===================================================================
+PHASE 7 SUCCESS CRITERIA
+===================================================================
+
+✅ All components integrated and work together
+✅ Configuration system working (YAML)
+✅ Daily workflow executes successfully
+✅ Paper trading mode functional
+✅ Trade execution simulated realistically
+✅ State persistence works (can resume)
+✅ Daily reports generated correctly
+✅ Alerts sent when configured
+✅ Dashboard displays real-time data
+✅ Scheduler automates daily execution
+✅ CLI provides easy operation
+✅ Integration tests pass
+✅ Paper trading matches backtest behavior
+✅ Logging comprehensive and useful
+✅ Documentation complete
+✅ Ready for extended paper trading period
+
+Once Phase 7 is complete, you can run the strategy in paper trading mode to validate it works with real-time data before considering live trading.
+
+===================================================================
+Step 7.1.8: Implement position state

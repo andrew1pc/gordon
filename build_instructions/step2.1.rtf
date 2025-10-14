@@ -1,0 +1,150 @@
+{\rtf1\ansi\ansicpg1252\cocoartf2820
+\cocoatextscaling0\cocoaplatform0{\fonttbl\f0\fswiss\fcharset0 Helvetica;}
+{\colortbl;\red255\green255\blue255;}
+{\*\expandedcolortbl;;}
+\margl1440\margr1440\vieww11520\viewh8400\viewkind0
+\pard\tx720\tx1440\tx2160\tx2880\tx3600\tx4320\tx5040\tx5760\tx6480\tx7200\tx7920\tx8640\pardirnatural\partightenfactor0
+
+\f0\fs24 \cf0 PHASE 2.1: BASIC TECHNICAL INDICATORS IMPLEMENTATION STEPS\
+\
+===================================================================\
+Step 2.1.1: Create the technical indicators module structure\
+===================================================================\
+\
+Create indicators/technical.py with a TechnicalIndicators class. Add an __init__ method and create skeleton methods for:\
+- calculate_sma(df, period) - Simple Moving Average\
+- calculate_ema(df, period) - Exponential Moving Average  \
+- calculate_rsi(df, period=14) - Relative Strength Index\
+- calculate_macd(df, fast=12, slow=26, signal=9) - MACD\
+- calculate_atr(df, period=14) - Average True Range\
+- calculate_volume_ma(df, period=20) - Volume Moving Average\
+\
+Each method should take a DataFrame with OHLCV data and return the DataFrame with the new indicator column added. Use type hints and docstrings.\
+\
+===================================================================\
+Step 2.1.2: Implement Simple Moving Average\
+===================================================================\
+\
+Implement the calculate_sma method in indicators/technical.py. It should:\
+- Calculate rolling mean of close prices over the specified period\
+- Add column named 'sma_\{period\}' to the DataFrame (e.g., 'sma_20', 'sma_50')\
+- Handle edge cases where period > data length\
+- Return the DataFrame with the new column added\
+Include a docstring with example usage.\
+\
+===================================================================\
+Step 2.1.3: Implement Exponential Moving Average\
+===================================================================\
+\
+Implement the calculate_ema method in indicators/technical.py. It should:\
+- Calculate exponential moving average using pandas.DataFrame.ewm()\
+- Use span=period for the smoothing factor\
+- Add column named 'ema_\{period\}' to the DataFrame\
+- Handle NaN values appropriately (first values will be NaN)\
+- Return the DataFrame with the new column\
+Test that EMA reacts faster than SMA to price changes.\
+\
+===================================================================\
+Step 2.1.4: Implement RSI (Relative Strength Index)\
+===================================================================\
+\
+Implement the calculate_rsi method in indicators/technical.py using the standard RSI formula:\
+1. Calculate price changes (delta = close.diff())\
+2. Separate gains (positive changes) and losses (negative changes)\
+3. Calculate average gain and average loss using EMA with period\
+4. Calculate RS = average_gain / average_loss\
+5. Calculate RSI = 100 - (100 / (1 + RS))\
+6. Add 'rsi' column to DataFrame with values between 0-100\
+7. Handle division by zero when average_loss is 0\
+Include detailed comments explaining the calculation.\
+\
+===================================================================\
+Step 2.1.5: Implement MACD\
+===================================================================\
+\
+Implement the calculate_macd method in indicators/technical.py. It should:\
+- Calculate fast EMA (default 12-period)\
+- Calculate slow EMA (default 26-period)\
+- Calculate MACD line = fast_ema - slow_ema\
+- Calculate signal line = 9-period EMA of MACD line\
+- Calculate MACD histogram = MACD line - signal line\
+- Add three columns: 'macd', 'macd_signal', 'macd_histogram'\
+- Return DataFrame with all three columns added\
+Ensure the calculation matches TradingView's MACD indicator.\
+\
+===================================================================\
+Step 2.1.6: Implement ATR (Average True Range)\
+===================================================================\
+\
+Implement the calculate_atr method in indicators/technical.py. ATR measures volatility:\
+1. Calculate True Range for each period as the max of:\
+   - high - low\
+   - abs(high - previous_close)\
+   - abs(low - previous_close)\
+2. Calculate ATR as the moving average (use EMA) of True Range over the period\
+3. Add 'atr' column to DataFrame\
+4. Handle the first row (no previous close) appropriately\
+Include comments explaining why ATR is useful for stop-loss placement.\
+\
+===================================================================\
+Step 2.1.7: Implement Volume Moving Average\
+===================================================================\
+\
+Implement the calculate_volume_ma method in indicators/technical.py. It should:\
+- Calculate simple moving average of volume over the specified period\
+- Add column named 'volume_ma_\{period\}' to DataFrame\
+- Also calculate a 'volume_ratio' column = current_volume / volume_ma\
+- This ratio helps identify volume surges (ratio > 1.5 is significant)\
+- Return DataFrame with both columns added\
+\
+===================================================================\
+Step 2.1.8: Create convenience method to add all indicators\
+===================================================================\
+\
+Add a method add_all_indicators(df) to the TechnicalIndicators class that:\
+- Adds all commonly used indicators in one call:\
+  - SMA: 20, 50, 200-day\
+  - EMA: 12, 26-day\
+  - RSI: 14-period\
+  - MACD: 12, 26, 9\
+  - ATR: 14-period\
+  - Volume MA: 20-day with ratio\
+- Returns the DataFrame with all indicator columns\
+- Handles any errors gracefully\
+This makes it easy to prepare data for analysis with one method call.\
+\
+===================================================================\
+Step 2.1.9: Create unit tests for technical indicators\
+===================================================================\
+\
+Create tests/test_technical.py with comprehensive pytest tests for TechnicalIndicators:\
+\
+Test fixtures:\
+- Create sample OHLCV data with known patterns (trending up, trending down, ranging)\
+- Create edge case data (single row, all same values, missing data)\
+\
+Test each indicator:\
+- test_sma_calculation - verify against manual calculation\
+- test_ema_calculation - verify EMA reacts faster than SMA\
+- test_rsi_calculation - test with known RSI values from TradingView\
+- test_rsi_bounds - verify RSI stays between 0-100\
+- test_macd_calculation - verify all three MACD components\
+- test_atr_calculation - verify ATR captures volatility correctly\
+- test_volume_ma_calculation - verify volume ratio detection\
+- test_add_all_indicators - verify all indicators added correctly\
+- test_edge_cases - test with insufficient data, NaN handling\
+\
+Use pytest fixtures and parametrize tests where appropriate.\
+\
+===================================================================\
+Step 2.1.10: Validate against TradingView\
+===================================================================\
+\
+Create a script validate_indicators_tradingview.py that:\
+1. Fetches AAPL data for last 100 days using TiingoClient\
+2. Calculates all technical indicators using TechnicalIndicators\
+3. Prints the last 10 days of data with all indicators\
+4. Includes instructions for manually checking these values against TradingView\
+5. Highlights what values to compare (RSI, MACD, moving averages)\
+\
+Add comments explaining that small differences (<1%) are acceptable due to rounding, but large differences indicate calculation errors.}

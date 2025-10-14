@@ -1,0 +1,56 @@
+# Momentum Trading Strategy Configuration
+
+api:
+  tiingo_api_key: ${TIINGO_API_KEY}  # Loaded from environment variable
+
+scanner:
+  stock_min_market_cap: 500000000  # $500M
+  stock_min_volume: 5000000  # $5M daily volume
+  crypto_top_n: 50
+  momentum_threshold: 70
+  max_candidates: 15
+  rescan_interval_days: 5
+
+signals:
+  entry:
+    rsi_min: 50
+    rsi_max: 70
+    require_volume_surge: true
+    volume_surge_threshold: 1.5
+  exit:
+    profit_target_stock: 0.20  # 20%
+    profit_target_crypto: 0.30  # 30%
+    stop_loss_stock: 0.08  # 8%
+    stop_loss_crypto: 0.12  # 12%
+    trailing_stop_activation: 0.10  # Activate at 10% gain
+    trailing_stop_distance: 0.08  # 8% below high
+    max_holding_days: 30
+
+risk:
+  initial_capital: 100000
+  risk_per_trade: 0.01  # 1%
+  max_positions: 8
+  max_portfolio_exposure: 0.25  # 25%
+  max_sector_exposure: 0.15  # 15%
+  max_daily_loss: 0.03  # 3%
+
+trading:
+  mode: paper  # backtest, paper, or live
+  slippage_stock: 0.001  # 0.1%
+  slippage_crypto: 0.003  # 0.3%
+  commission_stock: 0.0  # $0
+  commission_crypto: 0.001  # 0.1%
+
+alerts:
+  email_enabled: false
+  email_address: null
+  slack_webhook: null
+  alert_on_entry: true
+  alert_on_exit: true
+  alert_on_risk_limit: true
+
+logging:
+  level: INFO
+  log_file: logs/momentum_strategy.log
+  save_daily_snapshots: true
+  snapshot_dir: snapshots/

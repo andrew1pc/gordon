@@ -1,0 +1,64 @@
+PHASE 2.2: MOMENTUM METRICS IMPLEMENTATION STEPS
+
+===================================================================
+Step 2.2.1: Create momentum metrics module structure
+===================================================================
+
+Create indicators/momentum.py with a MomentumMetrics class. Add skeleton methods for:
+- calculate_roc(df, period) - Rate of Change
+- calculate_trend_strength(df) - Trend strength score based on MA positioning
+- detect_volume_surge(df, threshold=1.5) - Volume surge detection
+- calculate_momentum_score(df) - Composite momentum score 0-100
+
+Include docstrings explaining what each metric measures and how it's used in the trading strategy.
+
+===================================================================
+Step 2.2.2: Implement Rate of Change (ROC)
+===================================================================
+
+Implement the calculate_roc method in indicators/momentum.py. ROC measures momentum:
+
+Formula: ROC = ((current_price - price_n_periods_ago) / price_n_periods_ago) * 100
+
+The method should:
+- Calculate ROC for specified period (typically 20 and 50 days)
+- Add column 'roc_{period}' to DataFrame (e.g., 'roc_20', 'roc_50')
+- Handle edge cases where data length < period
+- Positive ROC = upward momentum, negative = downward
+- Return DataFrame with ROC column added
+
+Include example showing ROC > 20% is strong momentum, ROC < -20% is weak.
+
+===================================================================
+Step 2.2.3: Implement Trend Strength Score
+===================================================================
+
+Implement calculate_trend_strength method in indicators/momentum.py. This creates a 0-100 score based on:
+
+Criteria (each worth points):
+1. Price above 20-day MA: +20 points
+2. Price above 50-day MA: +20 points  
+3. Price above 200-day MA: +20 points
+4. 20-day MA above 50-day MA: +15 points
+5. 50-day MA above 200-day MA: +15 points
+6. 20-day MA trending up (higher than 5 days ago): +10 points
+
+The method should:
+- Require TechnicalIndicators.add_all_indicators() was run first (check for required columns)
+- Calculate the score based on above criteria
+- Add 'trend_strength' column to DataFrame (0-100)
+- Add 'trend_direction' column ('up', 'down', 'neutral')
+- Return DataFrame with new columns
+
+Score interpretation: >70 = strong uptrend, 30-70 = neutral, <30 = downtrend.
+
+===================================================================
+Step 2.2.4: Implement Volume Surge Detection
+===================================================================
+
+Implement detect_volume_surge method in indicators/momentum.py:
+
+The method should:
+- Calculate volume ratio (current volume / 20-day volume MA)
+- Add 'volume_surge' boolean column (True if ratio > threshold, default 1.5)
+- Add 'volume_ratio' co
