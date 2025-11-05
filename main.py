@@ -74,6 +74,12 @@ class MomentumStrategy:
         self.scanner = None
         self.signal_generator = None
         self.risk_manager = None
+        self.regime_detector = None
+
+        # Market regime state
+        self.current_regime = 'sideways'
+        self.regime_confidence = 0.5
+        self.regime_last_updated = None
 
         # Paper trading state
         self.mode = 'paper'
@@ -189,6 +195,11 @@ class MomentumStrategy:
             )
             logger.info("✓ Risk manager initialized")
 
+            # Initialize market regime detector
+            from indicators.market_regime import MarketRegimeDetector
+            self.regime_detector = MarketRegimeDetector()
+            logger.info("✓ Market regime detector initialized")
+
             # Initialize paper portfolio if in paper mode
             if self.mode == 'paper':
                 self.paper_portfolio['cash'] = initial_capital
@@ -231,6 +242,72 @@ class MomentumStrategy:
         root_logger.addHandler(file_handler)
         root_logger.addHandler(console_handler)
 
+    def update_market_regime(self) -> Dict:
+        """
+        Update market regime by fetching and analyzing SPY data.
+
+        Fetches latest SPY (S&P 500 ETF) data and detects current regime.
+        Updates internal state with regime and confidence.
+
+        Returns:
+            Dict with regime summary
+
+        Example:
+            >>> regime_info = strategy.update_market_regime()
+            >>> print(f"Regime: {regime_info['regime']}")
+        """
+        try:
+            logger.info("Updating market regime...")
+
+            # Fetch SPY data (90 days for MA200 calculation)
+            from indicators.technical import TechnicalIndicators
+
+            spy_data = self.tiingo_client.fetch_daily_prices('SPY', days=250)
+
+            if spy_data is None or spy_data.empty:
+                logger.warning("Could not fetch SPY data, keeping previous regime")
+                return {
+                    'regime': self.current_regime,
+                    'confidence': self.regime_confidence,
+                    'updated': False
+                }
+
+            # Add technical indicators
+            tech = TechnicalIndicators()
+            spy_data = tech.add_all_indicators(spy_data)
+
+            # Detect regime
+            regime, confidence = self.regime_detector.detect_regime(spy_data)
+
+            # Update state
+            self.current_regime = regime
+            self.regime_confidence = confidence
+            self.regime_last_updated = datetime.now()
+
+            # Get full summary
+            summary = self.regime_detector.get_regime_summary(spy_data)
+            summary['updated'] = True
+
+            logger.info(
+                f"Market regime: {regime.upper()} "
+                f"(confidence: {confidence:.1%})"
+            )
+            logger.info(
+                f"Risk adjustment: {summary['risk_multiplier']}x risk, "
+                f"{summary['max_positions']} max positions"
+            )
+
+            return summary
+
+        except Exception as e:
+            logger.error(f"Error updating market regime: {e}", exc_info=True)
+            return {
+                'regime': self.current_regime,
+                'confidence': self.regime_confidence,
+                'updated': False,
+                'error': str(e)
+            }
+
     def run_daily(self, date: datetime) -> Dict:
         """
         Execute daily trading workflow.
@@ -257,6 +334,19 @@ class MomentumStrategy:
         }
 
         try:
+            # 0. Update market regime (uses 1 API call to fetch SPY)
+            logger.info("Step 0: Updating market regime...")
+            regime_info = self.update_market_regime()
+            results['regime'] = regime_info.get('regime', 'unknown')
+            results['regime_confidence'] = regime_info.get('confidence', 0.0)
+            logger.info(f"Current regime: {results['regime'].upper()} ({results['regime_confidence']:.1%} confidence)")
+
+            # Apply regime adjustments to risk manager
+            risk_mult = regime_info.get('risk_multiplier', 1.0)
+            max_pos = regime_info.get('max_positions', 8)
+            self.risk_manager.apply_regime_adjustments(risk_mult, max_pos)
+            logger.info(f"Risk parameters adjusted for {results['regime']} market")
+
             # 1. Scan for candidates
             logger.info("Step 1: Scanning for candidates...")
             candidates = self.scan_and_select_candidates(date)

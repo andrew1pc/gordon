@@ -64,6 +64,137 @@ class SignalGenerator:
         """
         self.max_holding_days = max_holding_days
 
+    def calculate_entry_signal_strength(
+        self,
+        df: pd.DataFrame,
+        current_idx: int,
+        ticker: str
+    ) -> Dict[str, Any]:
+        """
+        Calculate entry signal strength (0-100) from conditions.
+
+        Scoring:
+        - Breakout (20-day high): 20 points
+        - Volume surge (>1.5x): 15 points (partial credit for 1.3x, 1.1x)
+        - MACD positive: 15 points
+        - Price above 50-day MA: 15 points
+        - 50-day MA trending up: 15 points
+        - Strong momentum (>=70): 20 points (partial credit for 60+, 50+)
+
+        Returns:
+            {
+                'signal_strength': 0-100,
+                'conditions_met': ['condition1', ...],
+                'conditions_failed': ['condition3', ...],
+                'condition_scores': {'breakout': 20, ...}
+            }
+        """
+        if current_idx < 20:
+            return {
+                'signal_strength': 0,
+                'conditions_met': [],
+                'conditions_failed': [],
+                'condition_scores': {}
+            }
+
+        try:
+            current = df.iloc[current_idx]
+            prev_20_highs = df['high'].iloc[current_idx-20:current_idx]
+
+            scores = {}
+            conditions_met = []
+            conditions_failed = []
+
+            # Condition 1: Breakout (20 points)
+            breakout = current['close'] > prev_20_highs.max()
+            if breakout:
+                scores['breakout'] = 20
+                conditions_met.append('breakout_20d_high')
+            else:
+                scores['breakout'] = 0
+                conditions_failed.append('breakout_20d_high')
+
+            # Condition 2: Volume surge (15 points with partial credit)
+            volume_ratio = current.get('volume_ratio', 1.0)
+            if volume_ratio >= 1.5:
+                scores['volume_surge'] = 15
+                conditions_met.append('volume_surge')
+            elif volume_ratio >= 1.3:
+                scores['volume_surge'] = 10  # Partial credit
+                conditions_failed.append('volume_surge')
+            elif volume_ratio >= 1.1:
+                scores['volume_surge'] = 5   # Minimal credit
+                conditions_failed.append('volume_surge')
+            else:
+                scores['volume_surge'] = 0
+                conditions_failed.append('volume_surge')
+
+            # Condition 3: MACD positive (15 points)
+            macd_positive = current.get('macd_histogram', 0) > 0
+            if macd_positive:
+                scores['macd_positive'] = 15
+                conditions_met.append('macd_positive')
+            else:
+                scores['macd_positive'] = 0
+                conditions_failed.append('macd_positive')
+
+            # Condition 4: Price above 50-day MA (15 points)
+            above_ma50 = current['close'] > current.get('sma_50', current['close'])
+            if above_ma50:
+                scores['above_ma50'] = 15
+                conditions_met.append('above_ma50')
+            else:
+                scores['above_ma50'] = 0
+                conditions_failed.append('above_ma50')
+
+            # Condition 5: 50-day MA trending up (15 points)
+            ma_trending_up = False
+            if 'sma_50' in current and current_idx >= 25:
+                ma50_current = current['sma_50']
+                ma50_5d_ago = df['sma_50'].iloc[current_idx - 5]
+                ma_trending_up = ma50_current > ma50_5d_ago
+
+            if ma_trending_up:
+                scores['ma_trending_up'] = 15
+                conditions_met.append('ma50_trending_up')
+            else:
+                scores['ma_trending_up'] = 0
+                conditions_failed.append('ma50_trending_up')
+
+            # Condition 6: Strong momentum (20 points with partial credit)
+            momentum_score = current.get('momentum_score', 0)
+            if momentum_score >= 70:
+                scores['strong_momentum'] = 20
+                conditions_met.append('strong_momentum')
+            elif momentum_score >= 60:
+                scores['strong_momentum'] = 15  # Partial credit
+                conditions_failed.append('strong_momentum')
+            elif momentum_score >= 50:
+                scores['strong_momentum'] = 10  # Minimal credit
+                conditions_failed.append('strong_momentum')
+            else:
+                scores['strong_momentum'] = 0
+                conditions_failed.append('strong_momentum')
+
+            # Calculate total strength
+            signal_strength = sum(scores.values())
+
+            return {
+                'signal_strength': signal_strength,
+                'conditions_met': conditions_met,
+                'conditions_failed': conditions_failed,
+                'condition_scores': scores
+            }
+
+        except Exception as e:
+            logger.error(f"Error calculating signal strength for {ticker}: {e}")
+            return {
+                'signal_strength': 0,
+                'conditions_met': [],
+                'conditions_failed': [],
+                'condition_scores': {}
+            }
+
     def check_entry_signals(
         self,
         df: pd.DataFrame,
@@ -71,15 +202,10 @@ class SignalGenerator:
         ticker: str
     ) -> Optional[Dict[str, Any]]:
         """
-        Check if entry conditions are met at current index.
+        Check if entry conditions are met using signal strength >= 70.
 
-        Entry Criteria (ALL must be met):
-        1. Price breaks above 20-day high
-        2. Volume surge (>= 1.5x average)
-        3. MACD histogram > 0
-        4. Price above 50-day MA
-        5. 50-day MA trending up
-        6. Momentum score >= 70
+        This is more flexible than requiring all 6 conditions (100 points).
+        Typically 4-5 strong conditions will meet the 70 point threshold.
 
         Args:
             df: DataFrame with all indicators calculated
@@ -87,92 +213,40 @@ class SignalGenerator:
             ticker: Ticker symbol
 
         Returns:
-            Signal dictionary if conditions met, None otherwise
+            Signal dictionary if signal strength >= 70, None otherwise
 
         Example:
             >>> signal = generator.check_entry_signals(df, idx, 'AAPL')
             >>> if signal:
-            ...     print(f"Entry signal: {signal['entry_price']}")
+            ...     print(f"Entry signal: {signal['signal_strength']}/100")
         """
-        if current_idx < 20:
-            return None  # Need 20 days of history
+        # Calculate signal strength
+        strength_result = self.calculate_entry_signal_strength(df, current_idx, ticker)
 
-        try:
-            current = df.iloc[current_idx]
-            prev_20_highs = df['high'].iloc[current_idx-20:current_idx]
+        # Require 70+ points (roughly 4-5 of 6 conditions)
+        MIN_SIGNAL_STRENGTH = 70
 
-            # Condition 1: Price breaks above 20-day high
-            breakout = current['close'] > prev_20_highs.max()
-
-            # Condition 2: Volume surge
-            volume_surge = current.get('volume_surge', False)
-            if not volume_surge and 'volume_ratio' in current:
-                volume_surge = current['volume_ratio'] >= 1.5
-
-            # Condition 3: MACD confirmation
-            macd_positive = False
-            if 'macd_histogram' in current:
-                macd_positive = current['macd_histogram'] > 0
-
-            # Condition 4: Price above 50-day MA
-            above_ma50 = False
-            if 'sma_50' in current:
-                above_ma50 = current['close'] > current['sma_50']
-
-            # Condition 5: 50-day MA trending up
-            ma_trending_up = False
-            if 'sma_50' in current and current_idx >= 25:
-                ma50_current = current['sma_50']
-                ma50_5d_ago = df['sma_50'].iloc[current_idx - 5]
-                ma_trending_up = ma50_current > ma50_5d_ago
-
-            # Condition 6: Strong momentum
-            strong_momentum = False
-            if 'momentum_score' in current:
-                strong_momentum = current['momentum_score'] >= 70
-
-            # Check all conditions
-            conditions_met = []
-            if breakout:
-                conditions_met.append('breakout_20d_high')
-            if volume_surge:
-                conditions_met.append('volume_surge')
-            if macd_positive:
-                conditions_met.append('macd_positive')
-            if above_ma50:
-                conditions_met.append('above_ma50')
-            if ma_trending_up:
-                conditions_met.append('ma50_trending_up')
-            if strong_momentum:
-                conditions_met.append('strong_momentum')
-
-            # All conditions must be met
-            all_met = (breakout and volume_surge and macd_positive and
-                      above_ma50 and ma_trending_up and strong_momentum)
-
-            if not all_met:
-                return None
-
-            # Calculate signal strength (0-100)
-            signal_strength = min(100, current.get('momentum_score', 70))
-
-            # Generate signal
-            signal = {
-                'signal': True,
-                'ticker': ticker,
-                'date': df.index[current_idx],
-                'entry_price': self.calculate_entry_price(df, current_idx, 'stock'),
-                'signal_strength': signal_strength,
-                'conditions_met': conditions_met,
-                'current_price': current['close']
-            }
-
-            logger.info(f"Entry signal for {ticker} on {signal['date'].date()}")
-            return signal
-
-        except Exception as e:
-            logger.error(f"Error checking entry signal for {ticker}: {e}")
+        if strength_result['signal_strength'] < MIN_SIGNAL_STRENGTH:
             return None
+
+        # Generate signal with strength included
+        signal = {
+            'signal': True,
+            'ticker': ticker,
+            'date': df.index[current_idx],
+            'entry_price': self.calculate_entry_price(df, current_idx, 'stock'),
+            'signal_strength': strength_result['signal_strength'],
+            'conditions_met': strength_result['conditions_met'],
+            'conditions_failed': strength_result['conditions_failed'],
+            'current_price': df.iloc[current_idx]['close']
+        }
+
+        logger.info(
+            f"Entry signal for {ticker} on {signal['date'].date()} "
+            f"(strength: {signal['signal_strength']}/100)"
+        )
+
+        return signal
 
     def calculate_entry_price(
         self,
@@ -346,11 +420,14 @@ class SignalGenerator:
         """
         current = df.iloc[current_idx]
 
+        # Get previous bar for gap detection
+        previous = df.iloc[current_idx - 1] if current_idx > 0 else None
+
         # Update position days held
         position.days_held = (df.index[current_idx] - position.entry_date).days
 
-        # 1. Check stop loss (highest priority)
-        stop_signal = self.check_stop_loss(position, current)
+        # 1. Check stop loss (highest priority) - pass previous bar for slippage calc
+        stop_signal = self.check_stop_loss(position, current, previous)
         if stop_signal:
             return stop_signal
 
@@ -379,18 +456,89 @@ class SignalGenerator:
 
         return None
 
-    def check_stop_loss(self, position: Position, current: pd.Series) -> Optional[Dict]:
-        """Check if stop loss triggered."""
+    def check_stop_loss(
+        self,
+        position: Position,
+        current: pd.Series,
+        previous: Optional[pd.Series] = None
+    ) -> Optional[Dict]:
+        """
+        Check if stop loss triggered with realistic slippage modeling.
+
+        Applies slippage to simulate real-world execution:
+        - Stocks: 0.5% base slippage
+        - Crypto: 1.0% base slippage
+        - Gap downs: Additional 0.5% slippage
+        - Exit price floored at daily low (can't exit below actual low)
+
+        Args:
+            position: Current position
+            current: Current bar data
+            previous: Previous bar data (for gap detection)
+
+        Returns:
+            Exit dict if stop triggered, None otherwise
+
+        Example:
+            >>> exit_signal = generator.check_stop_loss(position, current, previous)
+            >>> if exit_signal:
+            ...     print(f"Stop hit with {exit_signal['slippage_pct']:.2%} slippage")
+        """
         stop = position.trailing_stop if position.trailing_stop else position.initial_stop
 
         if current['low'] <= stop:
-            pnl = (stop - position.entry_price) / position.entry_price
+            # Determine base slippage rate (hardcoded)
+            if position.asset_type == 'crypto':
+                base_slippage = 0.01  # 1.0% for crypto
+            else:
+                base_slippage = 0.005  # 0.5% for stocks
+
+            # Check for gap down (adds extra slippage)
+            gap_slippage = 0.0
+            if previous is not None:
+                prev_close = previous['close']
+                curr_open = current['open']
+
+                # Gap down detected if open < previous close
+                if curr_open < prev_close:
+                    gap_pct = (prev_close - curr_open) / prev_close
+
+                    # Add extra 0.5% slippage for gaps
+                    if gap_pct > 0.005:  # Meaningful gap (>0.5%)
+                        gap_slippage = 0.005
+                        logger.debug(
+                            f"Gap down detected: {gap_pct:.2%}, "
+                            f"adding {gap_slippage:.2%} slippage"
+                        )
+
+            # Calculate total slippage
+            total_slippage = base_slippage + gap_slippage
+
+            # Apply slippage (exit below stop price)
+            exit_price_with_slippage = stop * (1 - total_slippage)
+
+            # Floor at daily low (can't exit below actual market low)
+            exit_price = max(exit_price_with_slippage, current['low'])
+
+            # Calculate actual slippage from stop
+            actual_slippage_pct = (stop - exit_price) / stop
+
+            pnl = (exit_price - position.entry_price) / position.entry_price
+
+            logger.debug(
+                f"Stop loss triggered: stop=${stop:.2f}, "
+                f"exit=${exit_price:.2f} ({actual_slippage_pct:.2%} slippage)"
+            )
+
             return {
                 'exit_type': 'stop_loss',
-                'exit_price': stop,
+                'exit_price': exit_price,
                 'exit_date': current.name,
                 'pnl': pnl,
-                'days_held': position.days_held
+                'days_held': position.days_held,
+                'stop_price': stop,
+                'slippage_pct': actual_slippage_pct,
+                'gap_detected': gap_slippage > 0
             }
         return None
 

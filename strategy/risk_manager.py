@@ -91,26 +91,33 @@ class RiskManager:
         self,
         entry_price: float,
         stop_loss: float,
-        asset_type: str = 'stock'
+        asset_type: str = 'stock',
+        signal_strength: int = 100
     ) -> Tuple[float, float]:
         """
-        Calculate position size based on risk per trade.
+        Calculate position size based on risk per trade and signal strength.
 
-        Formula: position_size = (account_size × risk_per_trade) / (entry_price - stop_loss)
+        Formula: position_size = (account_size × risk_per_trade × scale_factor) / (entry_price - stop_loss)
+
+        Signal strength scaling (hardcoded):
+        - 90-100: 100% size (full position)
+        - 80-89:  80% size (slightly reduced)
+        - 70-79:  60% size (significantly reduced)
 
         Args:
             entry_price: Planned entry price
             stop_loss: Stop loss price
             asset_type: 'stock' or 'crypto'
+            signal_strength: Signal strength 0-100 (default 100 for backward compatibility)
 
         Returns:
             Tuple of (position_size in shares/units, dollar_value)
 
         Example:
             >>> risk_mgr = RiskManager(100000, risk_per_trade=0.01)
-            >>> size, value = risk_mgr.calculate_position_size(100, 93, 'stock')
+            >>> size, value = risk_mgr.calculate_position_size(100, 93, 'stock', signal_strength=85)
             >>> print(f"{size:.0f} shares = ${value:,.0f}")
-            142 shares = $14,200
+            113 shares = $11,360  # 80% of full size
         """
         if entry_price <= stop_loss:
             logger.error(f"Invalid prices: entry={entry_price}, stop={stop_loss}")
@@ -122,11 +129,19 @@ class RiskManager:
         # Calculate dollar risk per trade
         dollar_risk = self.account_size * self.risk_per_trade
 
+        # Apply signal strength scaling
+        scale_factor = self.calculate_scaled_position_size(signal_strength)
+        scaled_dollar_risk = dollar_risk * scale_factor
+
+        logger.debug(
+            f"Signal strength: {signal_strength}/100 → scale factor: {scale_factor:.0%}"
+        )
+
         # Calculate risk per share/unit
         risk_per_unit = entry_price - stop_loss
 
         # Calculate position size
-        position_size = dollar_risk / risk_per_unit
+        position_size = scaled_dollar_risk / risk_per_unit
 
         # Apply crypto multiplier
         if asset_type == 'crypto':
@@ -158,10 +173,45 @@ class RiskManager:
 
         logger.info(
             f"Position size: {position_size:.2f} units @ ${entry_price:.2f} = "
-            f"${dollar_value:,.0f} (risk: ${dollar_risk:,.0f})"
+            f"${dollar_value:,.0f} (risk: ${dollar_risk:,.0f}, scaled: {scale_factor:.0%})"
         )
 
         return position_size, dollar_value
+
+    def calculate_scaled_position_size(self, signal_strength: int) -> float:
+        """
+        Calculate position size scaling factor based on signal strength.
+
+        Hardcoded tiers:
+        - 90-100: 1.0 (100% size - strongest signals)
+        - 80-89:  0.8 (80% size - good signals)
+        - 70-79:  0.6 (60% size - marginal signals)
+
+        Args:
+            signal_strength: Signal strength score 0-100
+
+        Returns:
+            Scale factor (0.6, 0.8, or 1.0)
+
+        Example:
+            >>> risk_mgr = RiskManager(100000)
+            >>> risk_mgr.calculate_scaled_position_size(95)  # Returns 1.0
+            >>> risk_mgr.calculate_scaled_position_size(85)  # Returns 0.8
+            >>> risk_mgr.calculate_scaled_position_size(75)  # Returns 0.6
+        """
+        if signal_strength >= 90:
+            return 1.0  # Full size
+        elif signal_strength >= 80:
+            return 0.8  # 80% size
+        elif signal_strength >= 70:
+            return 0.6  # 60% size
+        else:
+            # Below 70 shouldn't generate signals, but handle gracefully
+            logger.warning(
+                f"Signal strength {signal_strength} below threshold (70), "
+                f"using minimum scale factor"
+            )
+            return 0.6
 
     def get_portfolio_exposure(self) -> float:
         """
@@ -298,12 +348,14 @@ class RiskManager:
         entry_price: float,
         stop_loss: float,
         sector: Optional[str],
-        asset_type: str = 'stock'
+        asset_type: str = 'stock',
+        signal_strength: int = 100
     ) -> Tuple[bool, str, Optional[float], Optional[float]]:
         """
-        Comprehensive validation for a new trade.
+        Comprehensive validation for a new trade with signal strength scaling.
 
         Checks all risk management rules before approving trade.
+        Position size scales based on signal strength (90+=100%, 80-89=80%, 70-79=60%).
 
         Args:
             ticker: Ticker symbol
@@ -311,16 +363,17 @@ class RiskManager:
             stop_loss: Stop loss price
             sector: Sector classification
             asset_type: 'stock' or 'crypto'
+            signal_strength: Signal strength 0-100 (default 100 for backward compatibility)
 
         Returns:
             Tuple of (approved: bool, reason: str, position_size: float or None, dollar_value: float or None)
 
         Example:
             >>> approved, reason, size, value = risk_mgr.validate_new_trade(
-            ...     'AAPL', 150, 140, 'Technology', 'stock'
+            ...     'AAPL', 150, 140, 'Technology', 'stock', signal_strength=85
             ... )
             >>> if approved:
-            ...     print(f"Trade approved: {size} shares = ${value:,.0f}")
+            ...     print(f"Trade approved: {size} shares = ${value:,.0f} (80% size)")
             >>> else:
             ...     print(f"Trade rejected: {reason}")
         """
@@ -329,10 +382,10 @@ class RiskManager:
         if not trading_allowed:
             return False, f"Daily loss limit exceeded: ${daily_pnl:,.0f}", None, None
 
-        # Check 2: Calculate position size
+        # Check 2: Calculate position size (with signal strength scaling)
         try:
             position_size, dollar_value = self.calculate_position_size(
-                entry_price, stop_loss, asset_type
+                entry_price, stop_loss, asset_type, signal_strength
             )
         except ValueError as e:
             return False, f"Invalid position parameters: {e}", None, None
@@ -343,9 +396,11 @@ class RiskManager:
             return False, reason, None, None
 
         # All checks passed
+        scale_factor = self.calculate_scaled_position_size(signal_strength)
         logger.info(
             f"Trade validation passed: {ticker} {position_size:.2f} units @ "
-            f"${entry_price:.2f} = ${dollar_value:,.0f}"
+            f"${entry_price:.2f} = ${dollar_value:,.0f} "
+            f"(signal: {signal_strength}/100, scale: {scale_factor:.0%})"
         )
         return True, "Trade approved", position_size, dollar_value
 
@@ -524,3 +579,51 @@ class RiskManager:
         }
 
         return metrics
+
+    def apply_regime_adjustments(
+        self,
+        risk_multiplier: float,
+        max_positions: int
+    ) -> None:
+        """
+        Apply regime-based adjustments to risk parameters.
+
+        Adjusts risk_per_trade and max_positions based on market regime.
+        These adjustments are temporary and can be reset daily.
+
+        Args:
+            risk_multiplier: Multiplier for risk_per_trade (0.5 to 1.0)
+            max_positions: Maximum concurrent positions for this regime
+
+        Example:
+            >>> # In bear market
+            >>> risk_mgr.apply_regime_adjustments(0.5, 4)
+            >>> # Risk reduced to 50%, max positions reduced to 4
+        """
+        # Store original values if not already stored
+        if not hasattr(self, '_original_risk_per_trade'):
+            self._original_risk_per_trade = self.risk_per_trade
+            self._original_max_positions = self.max_positions
+
+        # Apply adjustments
+        self.risk_per_trade = self._original_risk_per_trade * risk_multiplier
+        self.max_positions = max_positions
+
+        logger.info(
+            f"Regime adjustments applied: risk={self.risk_per_trade*100:.2f}% "
+            f"(multiplier: {risk_multiplier}x), max_positions={max_positions}"
+        )
+
+    def reset_regime_adjustments(self) -> None:
+        """
+        Reset risk parameters to original values.
+
+        Removes regime-based adjustments.
+
+        Example:
+            >>> risk_mgr.reset_regime_adjustments()
+        """
+        if hasattr(self, '_original_risk_per_trade'):
+            self.risk_per_trade = self._original_risk_per_trade
+            self.max_positions = self._original_max_positions
+            logger.info("Regime adjustments reset to original values")
